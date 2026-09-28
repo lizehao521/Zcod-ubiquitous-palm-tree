@@ -4,8 +4,9 @@
 // 运行：node --test apps/zcode-cli/packages/adapters/tests/windows-code-page.test.ts
 // 为什么测的是 windows-code-page 而不是 outputEncoding：后者 value-import iconv-lite，
 // 裁剪检出里 `node --test` 加载即 ERR_MODULE_NOT_FOUND；本模块零运行时 import，
-// 命令执行器与 iconv 判定都由测试注入。真实 cmd.exe 延迟与 iconv 解码在本环境不可验证
-//（见 specs/windows-code-page/spec.md §6）。
+// 命令执行器与 iconv 判定都由测试注入。真实子进程那一条用 process.execPath 起进程，
+// 所以「异步不阻塞事件循环」在 Windows/macOS/Linux 上都能验；
+// iconv-lite 的真实解码路径仍不在本文件覆盖范围（见 specs/windows-code-page/spec.md §6）。
 // ============================================================
 
 import { test } from "node:test";
@@ -23,6 +24,13 @@ import {
 /** 测试用的「已安装编码」集合，替代 iconv-lite 的存在性判定。 */
 const KNOWN_ENCODINGS = new Set(["cp936", "cp950", "cp437", "gb18030", "utf8"]);
 const encodingExists = (encoding: string): boolean => KNOWN_ENCODINGS.has(encoding);
+
+/** chcp 的样本输出，以及它应当被解析成的编码名。 */
+const CHCP_STDOUT_SAMPLE = "Active code page: 936";
+const EXPECTED_ENCODING_FROM_SAMPLE = "cp936";
+/** 真实子进程测试里「慢」的前提：延迟要明显大于一个事件循环 turn。 */
+const REAL_CHILD_DELAY_MS = 40;
+const REAL_CHILD_TIMEOUT_MS = 5_000;
 
 interface ProbeRecord {
   probe: WindowsCodePageProbe;
@@ -53,7 +61,7 @@ function baseDeps(overrides: Partial<ResolverDeps> = {}): ResolverDeps {
     overrideEncoding: undefined,
     localeLegacyEncoding: () => "cp437",
     encodingExists,
-    probe: recordingProbe(["Active code page: 936"]).probe,
+    probe: recordingProbe([CHCP_STDOUT_SAMPLE]).probe,
     ...overrides,
   };
 }
@@ -197,21 +205,31 @@ test("S6: 解析期间事件循环未被冻结——先排队的 setImmediate �
   assert.deepEqual(order, ["tick", "resolved:cp936"], "同步实现下 tick 会排在 resolved 之后（见反向证据）");
 });
 
-test("真实异步 execFile 读取 chcp 同样不阻塞事件循环（本机 cmd.exe，跨平台时退化为 null）", async () => {
+test("真实异步子进程读取代码页不阻塞事件循环（跨平台：起一个带真实延迟的子进程）", async () => {
   const order: string[] = [];
   setImmediate(() => order.push("tick"));
   const encoding = await resolveWindowsOutputEncoding(baseDeps({
-    comSpec: "cmd.exe",
-    probe: ({ comSpec, env }) =>
+    comSpec: process.execPath,
+    probe: ({ comSpec }) =>
       new Promise<string>((resolve, reject) => {
-        execFile(comSpec, ["/d", "/s", "/c", "chcp"], { encoding: "utf8", env, timeout: 1000, windowsHide: true }, (error, stdout) => {
-          if (error) reject(error);
-          else resolve(stdout);
-        });
+        // 「等待期间事件循环仍可服务回调」这条断言要求子进程比一个 loop turn 慢。
+        // 原先直接起 cmd.exe：Windows 上进程启动本身 >1 turn，所以 order[0] === "tick" 成立；
+        // Linux CI 上 cmd.exe 不存在，spawn 立刻以 ENOENT 失败，rejection 的微任务排在
+        // setImmediate（宏任务）之前 ⇒ order[0] 变成 resolved，实测 104/105、fail 1。
+        // 改用 process.execPath（三平台都有）并显式等待，把「慢」变成测试保证的前提而不是运气。
+        execFile(
+          comSpec,
+          ["-e", `setTimeout(() => process.stdout.write(${JSON.stringify(CHCP_STDOUT_SAMPLE)}), ${REAL_CHILD_DELAY_MS})`],
+          { encoding: "utf8", env: process.env, timeout: REAL_CHILD_TIMEOUT_MS, windowsHide: true },
+          (error, stdout) => {
+            if (error) reject(error);
+            else resolve(stdout);
+          },
+        );
       }),
   }));
-  assert.ok(encoding === null || typeof encoding === "string");
   assert.equal(order[0], "tick", "真实子进程等待期间事件循环必须仍可服务回调");
+  assert.equal(encoding, EXPECTED_ENCODING_FROM_SAMPLE, "注入的编码集合应把样本解析成该编码");
 });
 
 /** 走异步读取入口，确认 readWindowsActiveCodePageEncoding 与决策链的解析结果一致。 */

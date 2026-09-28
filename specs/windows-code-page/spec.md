@@ -105,10 +105,16 @@ resolveLegacyExecutionOutputEncoding(options: {
 | S5 | 第二次 runner 返回 `65001` | 第二次结果翻转为 `utf8` 路径（证明代码页变化会被下一次 run 读到） |
 | S6 | 解析前 `setImmediate` 排队的回调 | 在 resolution promise settle **之前**执行（非阻塞证明；对同步实现该断言必须失败） |
 | S7 | `Active code page: 936` + `encodingExists` 为真 | `cp936`；`65001` → `utf8`；乱码输出 → `null`/locale 回退 |
+| S8 | 用 `process.execPath` 起一个**带真实延迟**的子进程作为 probe，解析前 `setImmediate` 排队 | `tick` 仍先于 resolution（非阻塞的真实子进程证明，三平台同一条断言）；同步实现下必须变红 |
 
 ## 6. 本环境不可验证（WARN）
 
 - 真实 `cmd.exe` 的 `chcp` 延迟分布（本机异步实现只测过事件循环 lag = 0 ms，未测尾延迟）。
+  「异步不阻塞事件循环」这条不再依赖 cmd.exe：S8 用 `process.execPath` 起子进程并显式等待，
+  所以三平台都能验；不在覆盖范围内的仍是**真实 chcp 的延迟分布**本身。
+  历史教训：S8 前身直接起 `cmd.exe`，Windows 上因为进程启动 >1 个 loop turn 而恰好通过，
+  Linux CI 上 cmd.exe 不存在、spawn 立即以 ENOENT 失败，resolution 的微任务排在
+  `setImmediate` 之前，实测 104/105 变红 —— 断言的前提应由测试自己保证，不该交给平台运气。
 - iconv-lite 对 `cp936`/`gb18030` 的真实解码正确性：本仓库裁剪后未安装依赖，任何 value import
   `iconv-lite` 的模块（含 `outputEncoding.ts`）在 `node --test` 下都 `ERR_MODULE_NOT_FOUND`，
   因此被证明的是**注入 predicate 后的决策逻辑**，不是 iconv 本身。
