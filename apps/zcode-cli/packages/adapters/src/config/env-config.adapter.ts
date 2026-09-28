@@ -339,3 +339,8 @@ function normalizeLogFormat(value: string): "text" | "json" {
   }
   return "text";
 }
+
+// 探针变异（故意留下的类型错误，只为验证新作业真的会拦）：
+// 把 string 赋给 number，落在 adapters 包 tsconfig 的 include（src/**/*）内。
+// 期望 PROBE CLI TypeCheck 变红并列出这一条；若它仍报 0 错误，说明这道闸门是假的。
+export const MUTATION_PROBE_STRING_AS_NUMBER: number = "deliberate-type-error";
