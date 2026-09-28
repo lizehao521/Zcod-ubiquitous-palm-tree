@@ -21,7 +21,8 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
 
 - 新增源模块 4：`logging/append-queue.ts`、`logging/append-queue-contract.ts`、
   `config/resolve-snapshot.ts`、`exec/windows-code-page.ts`
-- 新增测试 **7 文件 / 99 用例**，且 `skipped 0 / todo 0`（此前该 checkout 内 `*.test.*` 为 **0**）
+- 新增测试 **8 文件 / 105 用例**，逐文件 TAP 自算与尺子聚合一致，`skipped 0 / todo 0`
+  （此前该 checkout 内 `*.test.*` 为 **0**；M4 结束时为 5 文件 / 39 例）
 - 新增 spec 4：`runtime-env-config`、`logging-persistence`、`windows-code-page`、`core-fs-boundary`
 - 修好的既有违规 1：`config/index.ts` **491 → 364** 行（491 是 `git show HEAD` 实测；
   M3 stage2 报的 "500 行" 与 fix-config 自述同错，由 M4 `test-all` 纠正）
@@ -29,9 +30,11 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
 - **本轮自己新增、又在本轮内收掉的违规 1**：`adapters/tests/logging-append-queue.test.ts` 447 行
   → M5 拆为 345 + 347；用例名与主代理在拆分过程中抢拍的 28 名快照 `diff` 为空
   ⇒ 原 18 例全在，M7 是真新增的第 19 例（既有违规仍只记账不动）
+- 已落地提交 9 个（logging / exec / fs 例外 spec / .gitignore / config 合并包 /
+  审查后修复 / 判据工具与轮次记录 / 谱系闭合 / 本交付状态更正）
 - 已落地提交 5 个：logging / exec / fs 边界例外 spec / .gitignore / config 合并包
 
-## 二·五、M5 融合 DAG 的落地状态（写手三腿已落，审查与汇聚两腿在跑）
+## 二·五、M5 融合 DAG 的落地状态（六腿全落，含审查后修复）
 
 | 腿 | 状态 | 实测读数 |
 | --- | --- | --- |
@@ -40,6 +43,8 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
 | `fix-tests` | 已落 | 447 行拆为 345+347；28 个用例名与主代理抢拍快照 `diff` 为空；M7 变异复现 `{0,0}`→`{1,2}` |
 | `review` | 已落 | **确认 P1 漂移**：`MAX_TIMER_DELAY_MS` 只在 env 侧，`schema.ts:13` 从不引用它 ⇒ 配置文件写 `1e20` 仍直达 `setTimeout` 被钳成 1ms（复现 `FIRED after 4ms`）；另查出 9 处 spec 引用行号腐坏与"别名后出现者写胜"的未定案项。其自陈的 duty-6 扫描给出别名实测表 |
 | `test`（汇聚） | 已落 | 3 连跑读数完全一致；skip 门实证（有 skip ⇒ WARN + `notRun=1` + exit 1，且聚合数字仍显示 100/100 ⇒ 只有门会拦）；差分 19 增/13 改/0 删；TAP 自算 99 与尺子一致；行法零新增违规；**判 (c) 类 10 条"今天就能闭"，其中 2 条 iconv-lite 申报是过期事实** |
+| `post-review fixer` | 已落（`ab419db`） | 文件侧 `.max(2_147_483_647)` + 文本漂移守卫（clean 4/4；把常量 +1 ⇒ 1 红；数值还原但删 `.max()` ⇒ 2 红）；`schema.ts` 因 zod 未装不可加载 ⇒ `.max()` 只到静态审查，未执行 |
+| 主代理改判（用户裁决） | 已落（`ab419db`） | 别名改「主键赢 + `alias_conflict` 诊断」，两方向实测均 `9000` + 1 条；**改实现后尺子立刻 104/105 红**（fixer 原"后出现者写胜"用例），修断言集后回 105/105 —— 改判据要连测试一起改，不是改测试迁就实现 |
 
 ## 三、闭环掉的缺陷（都有可复现证据，不是叙述）
 
@@ -52,6 +57,20 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
 4. **MAIN-06（M7）**：删掉 `append-queue.ts:241` 的 await 前检查，同一场景从
    `asyncBatchCalls=0 / dup=0` 变成 `1 / 2` → 该守卫可观测，"被 await 后检查吸收"的说法被推翻。
    注意重复写在 mutant 里 `writeFailures` 仍为 0：**只能数注入 sink 实收行数**。
+
+## 三·五、交付状态（闭合时实测）
+
+- 本地 8 个提交，52 文件变更，+7528/−243；工作树干净（`git status -uall` 0 条）。
+- 已推送到 `https://github.com/lizehao521/Zcod-ubiquitous-palm-tree` 的**新分支**
+  `evolution/hermes-m1-m5`，远端 ref 实测与本地 HEAD 同为 `61d7388`。
+- **该仓库的 `main` 未被改动**，仍是它自己的 `c821398 "Initial commit"`：
+  两边历史无共同祖先，直推 main 只能靠强推覆盖或造一个跨历史合并提交，
+  二者都由用户裁决，不作为默认动作。PR 入口：
+  `https://github.com/lizehao521/Zcod-ubiquitous-palm-tree/pull/new/evolution/hermes-m1-m5`
+- 合并后 CI 预期红灯：`ci.yml` 的 typecheck/lint/architecture/build 指向本 checkout
+  不存在的根 `packages/`、`scripts/`（`git ls-files` 实测 0 条），与本轮改动无关。
+- 发布面扫描：本轮改动的 50 个文件内，个人路径/账号名/token 形态/本机代理端口 **0 命中**；
+  机器局部信息只留在 gitignore 的运维笔记里。
 
 ## 四、判据工具（主代理持有，子代理明令禁改）
 
