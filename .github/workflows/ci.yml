@@ -25,6 +25,10 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # 根 typecheck 是显式列举的 `tsc -b packages/*`，覆盖不到 apps/zcode-cli；
+      # 这条命令是 apps/zcode-cli/AGENTS.md「验证」里已经写明的第二道检查，
+      # 之前只在文档里、没有作业执行它 —— 本仓库那 7 处 TS2345 就是这么漏到 Build 才现形的。
+      - run: pnpm --dir apps/zcode-cli typecheck
 
   lint:
     name: Lint
@@ -87,3 +91,7 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @zcode/desktop run test --if-present
+      # 上一行在本仓库是空操作：实测 32 个工作区包没有任何一个声明 test 脚本，
+      # 所以 --if-present 什么都不跑却报 success。这一行走 adapters 包里新声明的入口，
+      # 把本轮 8 个测试文件 / 105 例真的跑起来；保留 desktop 那行不动，等它自己有测试时自然生效。
+      - run: pnpm --filter @zcode/adapters run test
