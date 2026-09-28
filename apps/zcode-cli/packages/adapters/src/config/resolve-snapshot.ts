@@ -15,8 +15,13 @@
 
 import type { RuntimeConfig } from "@zcode/contracts";
 
-/** 注入的默认值表：生产传 contracts 的 `DefaultRuntimeConfig`，测试传形状相同的字面量。 */
-export type ConfigDefaults = Record<string, unknown>;
+/**
+ * 注入的默认值表：生产传 contracts 的 `DefaultRuntimeConfig`，测试传形状相同的字面量。
+ * 显式并入 `RuntimeConfig`：它是有命名属性的接口、没有字符串索引签名，
+ * 不能隐式赋给 `Record<string, unknown>`（apps/zcode-cli 的 build 以 TS2345 拒掉过）。
+ * 遍历本身只把入参当 unknown 逐级取值，因此放宽类型不改变任何运行时行为。
+ */
+export type ConfigDefaults = Record<string, unknown> | RuntimeConfig;
 
 /** 已存值读取器：返回 undefined 表示该键在此 scope 缺席（与「显式 0 / false / 空串」严格区分）。 */
 export type ConfigLookup = (key: string) => unknown;

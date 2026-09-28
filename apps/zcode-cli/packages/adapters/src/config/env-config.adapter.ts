@@ -198,8 +198,11 @@ export function parseEnvConfigWithDiagnostics(
           invalidEnvDiagnostic(key, NETWORK_TIMEOUT_PATH, value, parsed.reason, NETWORK_TIMEOUT_FALLBACK),
         );
       } else if (isPrimaryKey) {
-        if (timeoutSource !== undefined && timeoutValue !== parsed.value) {
-          diagnostics.push(timeoutConflictDiagnostic(key, parsed.value, timeoutKeyOf(timeoutSource), timeoutValue));
+        // TS 不会把 "timeoutSource 已定义" 与 "timeoutValue 已定义" 关联起来，
+        // 所以这里显式收窄成局部常量，避免把 number|undefined 传进诊断签名。
+        const currentValue = timeoutValue;
+        if (timeoutSource !== undefined && currentValue !== undefined && currentValue !== parsed.value) {
+          diagnostics.push(timeoutConflictDiagnostic(key, parsed.value, timeoutKeyOf(timeoutSource), currentValue));
         }
         if (!config.network) config.network = {};
         config.network.timeout = parsed.value;
@@ -211,7 +214,7 @@ export function parseEnvConfigWithDiagnostics(
         config.network.timeout = parsed.value;
         timeoutSource = "alias";
         timeoutValue = parsed.value;
-      } else if (timeoutValue !== parsed.value) {
+      } else if (timeoutValue !== undefined && timeoutValue !== parsed.value) {
         diagnostics.push(timeoutConflictDiagnostic(ZCODE_HTTP_TIMEOUT_KEY, timeoutValue, key, parsed.value));
       }
     }
