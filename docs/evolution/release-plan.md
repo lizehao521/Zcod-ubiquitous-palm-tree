@@ -66,13 +66,19 @@ body 里会分两段说清各自动机，不装作是一件事。
 
 两条不体面、但必须写进台账的读数，是这次"绿"的边界：
 
-- **根 `pnpm typecheck` 不覆盖 `apps/zcode-cli`**（它只构建 `packages/*`）。
-  所以 TypeCheck 作业绿灯不能证明 M1–M5 的改动没有类型错误；那 7 处 TS2345 是 `pnpm build` 抓出来的。
+- **根 `pnpm typecheck` 覆盖不到 `apps/zcode-cli`**：它是一条显式列举的
+  `tsc -b packages/rpc … packages/desktop/tsconfig.host.json`（11 项，实测其中没有 `apps/`）。
+  所以 TypeCheck 作业绿灯不能证明 M1–M5 的改动没有类型错误；那 7 处 TS2345 是 Build 作业抓出来的。
+  成因不是 CLI 包没类型检查——`apps/zcode-cli` 自己有 `typecheck: turbo run typecheck`，
+  且 `pnpm-workspace.yaml` 里它就是工作区成员；只是根 TypeCheck 作业没调用它，
+  而 `build: pnpm -r build` 递归到了它。
   把 `apps/zcode-cli` 纳入根 typecheck 会暴露既有类型债，是一次独立改动，不与本修复混做。
 - **Test 作业没有牙齿**：`@zcode/desktop` 的 `package.json` 里没有 `test` 脚本（实测），
-  `--if-present` 因而是空操作；`ci.yml` 中 `zcode-cli` 出现 0 次 →
+  `--if-present` 因而是空操作；`ci.yml` 与 `release.yml` 中 `zcode-cli`、`apps/` 均出现 0 次（实测）→
   本轮的 8 个可加载测试文件 / 105 例**不在任何 CI 作业里执行**，
-  它们只在本地 `node --test` 尺子下成立。要让 CI 真跑它们，得先定跑器形态
+  它们只在本地 `node --test` 尺子下成立。
+  但别读成"CI 完全不碰这个包"：`pnpm build` 会编译它，那 7 处 TS2345 正是在 CLI 包里被抓出来的——
+  **被编译、不被测试**。要让 CI 真跑这些用例，得先定跑器形态
   （Node 原生类型擦除，还是先构建再跑），这是产品级选择，等对齐后再动。
 
 ## 落地情况（截至 CI 转绿）
