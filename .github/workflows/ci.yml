@@ -26,9 +26,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       # 根 typecheck 是显式列举的 `tsc -b packages/*`，覆盖不到 apps/zcode-cli；
-      # 这条命令是 apps/zcode-cli/AGENTS.md「验证」里已经写明的第二道检查，
-      # 之前只在文档里、没有作业执行它 —— 本仓库那 7 处 TS2345 就是这么漏到 Build 才现形的。
-      - run: pnpm --dir apps/zcode-cli typecheck
+      # CLI 侧的类型检查此前只写在 apps/zcode-cli/AGENTS.md「验证」里、没有作业执行它
+      # —— 本仓库那 7 处 TS2345 就是这么漏到 Build 才现形的。
+      # 用 --filter 而不是文档里的 --dir：AGENTS.md 写的 `pnpm --dir apps/zcode-cli typecheck`
+      # 在 CI 上实测失败（sh: 1: turbo: not found，TypeCheck 作业 exit 1），
+      # 同一脚本经 `pnpm --filter zcode-cli run typecheck` 调用实测通过
+      # （turbo 扇出 17 个包、27 个任务全成功、error TS 0、1m37s）。
+      - run: pnpm --filter zcode-cli run typecheck
 
   lint:
     name: Lint
