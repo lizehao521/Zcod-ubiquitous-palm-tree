@@ -91,10 +91,12 @@ jobs:
   # 探针作业（只为量两个空洞的尺度，不并入交付分支）：
   # 1) 根 typecheck 若扩到 apps/zcode-cli，会暴露多少既有类型错误
   # 2) node --test 直接跑本轮 8 个测试文件，在 ubuntu + Node 24 上是否真的可执行
+  # 注意：上一版探针给这两个作业加了 continue-on-error 并用 `命令 | tee 日志`，
+  # 结果管道退出码取的是 tee（0），作业报 success 而实际 fail=1 —— 假绿。
+  # 这版改成：不设 continue-on-error，pipefail 打开，读数步骤用 if: always()。
   probe-cli-typecheck:
     name: PROBE CLI TypeCheck
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -105,18 +107,29 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter zcode-cli run typecheck 2>&1 | tee probe-typecheck.log
-      - run: |
+      - name: 跑 CLI 侧 typecheck（turbo 扇出到自报 typecheck 的子包）
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter zcode-cli run typecheck > probe-typecheck.log 2>&1
+          echo "typecheck 通过（退出码 0 才会到这里）"
+      - if: always()
+        name: 读数
+        shell: bash
+        run: |
           echo "=== PROBE 读数 ==="
           grep -oE 'error TS[0-9]+' probe-typecheck.log | sort | uniq -c | sort -rn
-          echo "TOTAL_TS_ERRORS=$(grep -cE 'error TS[0-9]+' probe-typecheck.log)"
-          echo "FILES_WITH_ERRORS=$(grep -oE '^[^(]+\.tsx?' probe-typecheck.log | sort -u | wc -l)"
-          echo "PACKAGES=$(grep -oE '[0-9]+:@zcode/[a-z-]+' probe-typecheck.log | sort -u | tr '\n' ' ')"
+          echo "TOTAL_TS_ERRORS=$(grep -cE 'error TS[0-9]+' probe-typecheck.log || true)"
+          echo "FILES_WITH_ERRORS=$(grep -oE '\([0-9]+,[0-9]+\): error TS' probe-typecheck.log | wc -l)"
+          echo "涉及包=$(grep -oE '@[a-z/-]+:typecheck' probe-typecheck.log | sed 's/:typecheck//' | sort -u | tr '\n' ' ')"
+          echo "--- adapters 包的行数 ---"
+          grep -c '@zcode/adapters' probe-typecheck.log || true
+          echo "--- 前 40 条 error ---"
+          grep -E 'error TS' probe-typecheck.log | head -40 || true
 
   probe-cli-test:
     name: PROBE CLI Test
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -127,8 +140,52 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: node --test --test-reporter=tap apps/zcode-cli/packages/adapters/tests/ 2>&1 | tee probe-test.log
-      - run: |
+      - name: 用 node --test 跑本轮测试（glob 形式，目录形式在 Node 24 会被当模块）
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap "apps/zcode-cli/packages/adapters/tests/*.test.ts" > probe-test.log 2>&1
+          echo "node --test 通过（退出码 0 才会到这里）"
+      - if: always()
+        name: 读数
+        shell: bash
+        run: |
           echo "=== PROBE 读数 ==="
           grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo)' probe-test.log
-          grep -cE '^not ok' probe-test.log || true
+          echo "文件级 not ok 数=$(grep -cE '^not ok' probe-test.log || true)"
+          echo "跑过的文件名:"
+          grep -oE 'tests/[a-z-]+\.test\.ts' probe-test.log | sort -u
+          node -v
+          echo "--- 尾部 40 行（失败时给细节）---"
+          tail -40 probe-test.log
+
+  probe-test-typecheck:
+    name: PROBE Test TypeCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: 把 tests/ 纳入 tsc 视野后有多少错误
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @zcode/adapters exec tsc -p tsconfig.probe-tests.json --pretty false > probe-test-tc.log 2>&1
+          echo "tsc 成功（0 错误才会到这里）"
+      - if: always()
+        name: 读数
+        shell: bash
+        run: |
+          echo "=== PROBE 读数 ==="
+          echo "TOTAL_TS_ERRORS=$(grep -cE 'error TS[0-9]+' probe-test-tc.log || true)"
+          echo "落在 tests/ 的=$(grep -cE '^tests/.*error TS' probe-test-tc.log || true)"
+          echo "落在 src/ 的=$(grep -cE '^src/.*error TS' probe-test-tc.log || true)"
+          grep -oE 'error TS[0-9]+' probe-test-tc.log | sort | uniq -c | sort -rn | head -12
+          echo "--- 前 30 条 ---"
+          grep -E 'error TS' probe-test-tc.log | head -30

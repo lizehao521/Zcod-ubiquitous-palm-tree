@@ -1,0 +1,15 @@
+{
+  "//": "探针专用：把 tests/ 也纳入 tsc 视野，量本轮 8 个测试文件自身有多少类型错误。仓库现有 tsconfig 的 include 只有 src/**/*，而 node --test 的类型擦除完全不做类型检查 —— 也就是 tests/ 目前没有任何尺子覆盖。allowImportingTsExtensions 是必需的，因为测试按 Node 24 的要求显式写 .ts 扩展名。",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}
