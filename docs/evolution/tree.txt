@@ -1,0 +1,23 @@
+root (seed, fit=n/a) ROOT baseline (v3.14.3 / zcode-cli 0.16.9, commit 69dfda4)
+├─ gen1-a (frontier-grow, fit=100, cases=21/21) M1 fix-env-config (D1+D1b: env 数值守卫)
+│  └─ gen2-a (frontier-grow, fit=100, cases=21/21) M2 review-env 互审：诊断接入汇总入口 + 桶导出补全 + 注释纠偏
+│     └─ gen4-b (frontier-grow, fit=100, cases=17/17) M4 fix-config：三处重复 key→default 表收进 resolve-snapshot（config/index.ts 491→364，git 实测）+ 杀 M8/M9/M10 + spec §4 重复范围纠偏
+│        └─ gen5-a (frontier-grow, fit=100, cases=51/51) M5 fix-db：env 数值按序守卫 + 0=显式关闭超时（D-B）+ 2^31-1 上界（MAIN-07）+ 非字符串不外抛（MAIN-08）
+│           └─ gen5-c (frontier-grow, fit=100, cases=36/36) M5 审查后修复：文件侧补 2^31-1 超时上界（漂移守卫）+ 别名主键优先并出 alias_conflict 诊断（用户裁决）+ spec 引用行号全量校正  ← FRONTIER
+├─ gen1-b (frontier-grow, fit=100, cases=15/15) M1 fix-logging-io (有界异步落盘队列)
+│  └─ gen2-b (frontier-grow, fit=100, cases=18/18) M2 review-logging 互审：在飞批次丢失(F1)+级别感知保留(F2)+自报schema违规(F3)+400行拆分(F4)
+│     └─ gen5-b (frontier-grow, fit=100, cases=19/19) M5 fix-tests：拆掉本轮自造的 447 行违规（345+347，用例名逐名等价）+ 用正式用例钉死 M7  ← FRONTIER
+├─ gen4-a (frontier-grow, fit=100, cases=12/12) M4 fix-exec：chcp 解析去阻塞（新增 windows-code-page 纯模块，禁跨 run 缓存）  ← FRONTIER
+└─ gen3-audit (frontier-grow, fit=n/a) M3 流水线第三棒：闭合审计（70 个说明符 37 相对全部解析、0 悬空；两个被点名循环对确认非环；判词 import-closed）——本节点不产出代码，故 fit=n/a  ← FRONTIER
+
+nodes=11 frontier=[gen4-a, gen3-audit, gen5-b, gen5-c] stale=0
+  gen1-a 未验证边界: ConfigPort.getAll() 末段（@zcode/contracts 值导入不可加载） | http/index.ts 运行期分支（proxy-agent 缺失）
+  gen1-b 未验证边界: logging/index.ts↔queue 装配（模块无法加载） | process.exit flushSync 钩子实跑 | 真盘/跨平台 E2E
+  gen2-a 未验证边界: createConfig() 端到端真写出 config.env.invalid warn | 桶导出运行时可见性（@zcode/contracts 值导入不可加载） | ConfigPort.getAll() 回落 180000/10 的消费端
+  gen2-b 未验证边界: logging/index.ts↔queue 装配仍不可加载（enum 值导入） | 真盘/跨平台 E2E 未跑 ⇒ 可闭未做 | SIGKILL/断电窗口不可自证（永久）
+  gen4-a 未验证边界: cmd.exe 尾延迟与 10 并发改善幅度未实测 | await 后取消窗口只由既有 stoppedBeforeSpawn 兜住（静态审查） | 真机中文输出命令 E2E 未跑 ⇒ 可闭未做
+  gen4-b 未验证边界: config/index.ts 仍不可加载（值导入 @zcode/contracts）⇒ 装配靠纯模块动态测+源码扫描测，非端到端
+  gen3-audit 未验证边界: @zcode/shared 及其子路径在本 checkout 不可解析（根 packages/ 缺失） | outputEncoding.ts 与其下游不可加载的真因是 NodeNext 相对**值**导入写成 ./x.js（类型擦除不改写说明符），不是 iconv-lite 未安装——实测 adapters/node_modules/iconv-lite 存在，此条为对 gen3 原申报的主代理更正（MAIN-11） | 6 个被改接的消费者模块全部不可加载 ⇒ 桶导出仅静态核对；代理自陈的 export* 展开器在 53 星桶上失效 ⇒ 44 条候选记为疑似仪器假阳性而非发现
+  gen5-b 未验证边界: logging/index.ts 仍不可加载（contracts 未链 + enum 值导入）⇒ 工厂装配依旧是代码审查证据
+  gen5-a 未验证边界: schema.ts 不可加载（zod 未装）⇒ .nonnegative() 无执行断言，文件路径的上界是否也守住由 M5 审查腿定案 | 0 的端到端 getAll()→http/index.ts:79 依赖主代理对解析器的直驱读数而非真进程 | auth-login 的'关闭时留 warn'落在 bootstrap/ 边界外，记为后续项
+  gen5-c 未验证边界: schema.ts 不可加载（zod 未装）⇒ .max() 只有文本漂移守卫与静态审查，未执行 | set()/merge() 仍是未校验入口，0/超大值可从那里进（本轮按裁决不加守卫）
