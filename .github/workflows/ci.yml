@@ -87,3 +87,48 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @zcode/desktop run test --if-present
+
+  # 探针作业（只为量两个空洞的尺度，不并入交付分支）：
+  # 1) 根 typecheck 若扩到 apps/zcode-cli，会暴露多少既有类型错误
+  # 2) node --test 直接跑本轮 8 个测试文件，在 ubuntu + Node 24 上是否真的可执行
+  probe-cli-typecheck:
+    name: PROBE CLI TypeCheck
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter zcode-cli run typecheck 2>&1 | tee probe-typecheck.log
+      - run: |
+          echo "=== PROBE 读数 ==="
+          grep -oE 'error TS[0-9]+' probe-typecheck.log | sort | uniq -c | sort -rn
+          echo "TOTAL_TS_ERRORS=$(grep -cE 'error TS[0-9]+' probe-typecheck.log)"
+          echo "FILES_WITH_ERRORS=$(grep -oE '^[^(]+\.tsx?' probe-typecheck.log | sort -u | wc -l)"
+          echo "PACKAGES=$(grep -oE '[0-9]+:@zcode/[a-z-]+' probe-typecheck.log | sort -u | tr '\n' ' ')"
+
+  probe-cli-test:
+    name: PROBE CLI Test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: node --test --test-reporter=tap apps/zcode-cli/packages/adapters/tests/ 2>&1 | tee probe-test.log
+      - run: |
+          echo "=== PROBE 读数 ==="
+          grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo)' probe-test.log
+          grep -cE '^not ok' probe-test.log || true
