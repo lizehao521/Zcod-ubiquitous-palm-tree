@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: TypeCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  architecture:
+    name: Architecture Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm architecture:check
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [typecheck, lint, architecture]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @zcode/desktop run test --if-present
+
+  # 探针作业（只为量两个空洞的尺度，不并入交付分支）：
+  # 1) 根 typecheck 若扩到 apps/zcode-cli，会暴露多少既有类型错误
+  # 2) node --test 直接跑本轮 8 个测试文件，在 ubuntu + Node 24 上是否真的可执行
+  # 注意：上一版探针给这两个作业加了 continue-on-error 并用 `命令 | tee 日志`，
+  # 结果管道退出码取的是 tee（0），作业报 success 而实际 fail=1 —— 假绿。
+  # 这版改成：不设 continue-on-error，pipefail 打开，读数步骤用 if: always()。
+  probe-cli-typecheck:
+    name: PROBE CLI TypeCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: 跑 CLI 侧 typecheck（turbo 扇出到自报 typecheck 的子包）
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter zcode-cli run typecheck > probe-typecheck.log 2>&1
+          echo "typecheck 通过（退出码 0 才会到这里）"
+      - if: always()
+        name: 读数
+        shell: bash
+        run: |
+          echo "=== PROBE 读数 ==="
+          { grep -oE 'error TS[0-9]+' probe-typecheck.log || true; } | sort | uniq -c | sort -rn
+          echo "TOTAL_TS_ERRORS=$(grep -cE 'error TS[0-9]+' probe-typecheck.log || true)"
+          echo "FILES_WITH_ERRORS=$(grep -oE '\([0-9]+,[0-9]+\): error TS' probe-typecheck.log | wc -l)"
+          echo "涉及包=$(grep -oE '@[a-z/-]+:typecheck' probe-typecheck.log | sed 's/:typecheck//' | sort -u | tr '\n' ' ')"
+          echo "--- adapters 包的行数 ---"
+          grep -c '@zcode/adapters' probe-typecheck.log || true
+          echo "--- 落在 tests/ 的错误行数 ---"
+          grep -cE 'tests/[a-z-]+\.test\.ts\([0-9]+,[0-9]+\): error TS' probe-typecheck.log || true
+          echo "--- tests/ 错误原文（最多 20 条）---"
+          { grep -E 'tests/[a-z-]+\.test\.ts\([0-9]+,[0-9]+\): error TS' probe-typecheck.log || true; } | head -20
+          echo "--- 前 40 条 error ---"
+          grep -E 'error TS' probe-typecheck.log | head -40 || true
+
+  probe-cli-test:
+    name: PROBE CLI Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: 用 node --test 跑本轮测试（glob 形式，目录形式在 Node 24 会被当模块）
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap "apps/zcode-cli/packages/adapters/tests/*.test.ts" > probe-test.log 2>&1
+          echo "node --test 通过（退出码 0 才会到这里）"
+      - if: always()
+        name: 读数
+        shell: bash
+        run: |
+          echo "=== PROBE 读数 ==="
+          grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo)' probe-test.log
+          echo "文件级 not ok 数=$(grep -cE '^not ok' probe-test.log || true)"
+          echo "跑过的文件名:"
+          grep -oE 'tests/[a-z-]+\.test\.ts' probe-test.log | sort -u
+          node -v
+          echo "--- 尾部 40 行（失败时给细节）---"
+          tail -40 probe-test.log
+
+  # 原来的 PROBE Test TypeCheck 作业已删：它对独立 tsconfig 跑裸 `tsc`，
+  # 不会先构建工作区依赖，得到 328 个 error TS（158 个 TS2307 Cannot find module
+  # '@zcode/contracts'，100 个 TS2339 连锁），量的是"依赖没建"而不是类型债。
+  # 现在改成把 tests/ 纳入 @zcode/adapters 自己的 typecheck 脚本，
+  # 由上面的 PROBE CLI TypeCheck（pnpm --filter zcode-cli run typecheck → turbo 先建依赖）一并量。

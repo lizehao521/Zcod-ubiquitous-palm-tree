@@ -1,0 +1,250 @@
+{
+  "nodes": [
+    {
+      "id": "root",
+      "label": "ROOT baseline (v3.14.3 / zcode-cli 0.16.9, commit 69dfda4)",
+      "fit": null,
+      "branch": "seed",
+      "parent": null,
+      "baseline": {
+        "backend_surface_present": [
+          "apps/zcode-cli/packages/*"
+        ],
+        "missing_from_checkout": [
+          "packages/",
+          "scripts/",
+          "patches/"
+        ],
+        "validators_available": [
+          "node --test (Node v24.13 native TS type stripping)"
+        ],
+        "validators_unavailable": [
+          "oxlint (not installed)",
+          "tsc (not installed)",
+          "vitest (not installed)"
+        ],
+        "tracked_test_files_before_run": 0,
+        "ci_status_on_main": "red-by-construction: .github/workflows/ci.yml runs pnpm typecheck|lint|architecture:check|build against packages/ and scripts/, which are absent from this checkout",
+        "reproduced_defects": [
+          {
+            "id": "D1",
+            "severity": "P0",
+            "where": "apps/zcode-cli/packages/adapters/src/config/env-config.adapter.ts:78-81",
+            "chain": [
+              "env-config.adapter.ts:44-46 ZCODE_HTTP_TIMEOUT -> network.timeout",
+              "bootstrap/src/app/create-app.ts:413 -> http client options.timeoutMs",
+              "adapters/src/http/index.ts:58 '??' accepts 0",
+              "adapters/src/http/index.ts:79 'if (timeoutMs > 0)' -> timeout arm skipped"
+            ],
+            "evidence": "node --test assertion passed pre-fix: parseEnvConfig({ZCODE_HTTP_TIMEOUT:\"30s\"}).network.timeout === 0",
+            "owner": "m1-fix-env-config"
+          },
+          {
+            "id": "D2",
+            "severity": "P1",
+            "where": "apps/zcode-cli/packages/adapters/src/logging/index.ts:119-141,240-245",
+            "claim": "appendFileSync + existsSync/mkdirSync on every log line, on the debug/streaming path; AGENTS.md requires async fs",
+            "owner": "m1-fix-logging-io"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gen1-a",
+      "label": "M1 fix-env-config (D1+D1b: env 数值守卫)",
+      "fit": 100,
+      "cases": "21/21",
+      "branch": "frontier-grow",
+      "parent": "root",
+      "unverified": [
+        "ConfigPort.getAll() 末段（@zcode/contracts 值导入不可加载）",
+        "http/index.ts 运行期分支（proxy-agent 缺失）"
+      ],
+      "main_probe": "parseEnvConfigWithDiagnostics: 30s/空串/空白/-5/0/Infinity 均 key-absent + 具名 reason；合法 45000/1e3/0x10/10.5 保持"
+    },
+    {
+      "id": "gen1-b",
+      "label": "M1 fix-logging-io (有界异步落盘队列)",
+      "fit": 100,
+      "cases": "15/15",
+      "branch": "frontier-grow",
+      "parent": "root",
+      "unverified": [
+        "logging/index.ts↔queue 装配（模块无法加载）",
+        "process.exit flushSync 钩子实跑",
+        "真盘/跨平台 E2E"
+      ],
+      "main_probe": "注入 io 实测：cap5/200B 灌 50 条 → buffered=5, dropped=45, reason=queue-full；异步 ENOSPC 不外抛；flushSync 落 2 个日期文件"
+    },
+    {
+      "id": "gen2-a",
+      "label": "M2 review-env 互审：诊断接入汇总入口 + 桶导出补全 + 注释纠偏",
+      "fit": 100,
+      "cases": "21/21",
+      "branch": "frontier-grow",
+      "parent": "gen1-a",
+      "unverified": [
+        "createConfig() 端到端真写出 config.env.invalid warn",
+        "桶导出运行时可见性（@zcode/contracts 值导入不可加载）",
+        "ConfigPort.getAll() 回落 180000/10 的消费端"
+      ],
+      "note": "变异测试：删 empty 守卫→1 fail；删 finite 守卫→8 fail（含 D1b Infinity→1ms 毒路径）；删 positive 守卫→5 fail；AC-4 对照组防『一律忽略』假修复。主代理实读 diff 确认 envDiagnostics 有独立上报循环，非装饰性接线",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen2-b",
+      "label": "M2 review-logging 互审：在飞批次丢失(F1)+级别感知保留(F2)+自报schema违规(F3)+400行拆分(F4)",
+      "fit": 100,
+      "cases": "18/18",
+      "branch": "frontier-grow",
+      "parent": "gen1-b",
+      "unverified": [
+        "logging/index.ts↔queue 装配仍不可加载（enum 值导入）",
+        "真盘/跨平台 E2E 未跑 ⇒ 可闭未做",
+        "SIGKILL/断电窗口不可自证（永久）"
+      ],
+      "note": "M7-M10 四个存活变异体已全部闭合：M8/M9/M10 由 gen4-b（选项钳制/unref/unshift 顺序），M7 由 gen5-b（ensureDir 窗口接管，删 :241 恰好 1 例红）。原「四条守卫无测试覆盖」的申报作废",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen4-a",
+      "label": "M4 fix-exec：chcp 解析去阻塞（新增 windows-code-page 纯模块，禁跨 run 缓存）",
+      "fit": 100,
+      "cases": "12/12",
+      "branch": "frontier-grow",
+      "parent": "root",
+      "unverified": [
+        "cmd.exe 尾延迟与 10 并发改善幅度未实测",
+        "await 后取消窗口只由既有 stoppedBeforeSpawn 兜住（静态审查）",
+        "真机中文输出命令 E2E 未跑 ⇒ 可闭未做"
+      ],
+      "note": "更正（MAIN-11）：本节点原记「iconv-lite 未安装」为错判，实测 adapters/node_modules/iconv-lite 存在；真不可加载的原因是 NodeNext 相对值导入写成 ./x.js。真实解码集合与中文 E2E 属可闭项，不是环境极限",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen4-b",
+      "label": "M4 fix-config：三处重复 key→default 表收进 resolve-snapshot（config/index.ts 491→364，git 实测）+ 杀 M8/M9/M10 + spec §4 重复范围纠偏",
+      "fit": 100,
+      "cases": "17/17",
+      "branch": "frontier-grow",
+      "parent": "gen2-a",
+      "unverified": [
+        "config/index.ts 仍不可加载（值导入 @zcode/contracts）⇒ 装配靠纯模块动态测+源码扫描测，非端到端"
+      ],
+      "note": "行数以 M4 test-all 实测为准：config/index.ts 是 HEAD 491 → 364（stage2 与我曾记作 500，已纠正）；导出面 HEAD 30 → 34，丢失 0，多出的 4 个是 M2 ENV2-02 有意加。merge() 故意未表驱动；clampPositive 无上界钳制；network.timeout=0 未加守卫（等 D-B）；get/has 对 skill/command 由抛错改为 {} —— draft-scan 进一步证明生产中该 throw 本就不可达（config-factory.ts:235-236 以 DefaultRuntimeConfig 作 System 层播种），spec §12.1 措辞已在 M5 收紧",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen3-audit",
+      "label": "M3 流水线第三棒：闭合审计（70 个说明符 37 相对全部解析、0 悬空；两个被点名循环对确认非环；判词 import-closed）——本节点不产出代码，故 fit=n/a",
+      "fit": null,
+      "cases": null,
+      "branch": "frontier-grow",
+      "parent": "root",
+      "unverified": [
+        "@zcode/shared 及其子路径在本 checkout 不可解析（根 packages/ 缺失）",
+        "outputEncoding.ts 与其下游不可加载的真因是 NodeNext 相对**值**导入写成 ./x.js（类型擦除不改写说明符），不是 iconv-lite 未安装——实测 adapters/node_modules/iconv-lite 存在，此条为对 gen3 原申报的主代理更正（MAIN-11）",
+        "6 个被改接的消费者模块全部不可加载 ⇒ 桶导出仅静态核对；代理自陈的 export* 展开器在 53 星桶上失效 ⇒ 44 条候选记为疑似仪器假阳性而非发现"
+      ],
+      "note": "新记 P2 台账：8 个零消费者导出（AppendQueueOptions、ConfigDefaults 与 windows-code-page 的 6 个）属对外面过宽而非死代码；resolveSnapshot 生产侧无人调用，只有本轮测试用 ⇒ '单一来源'对 getAll 成立，对 resolveSnapshot 是多余 API。真环 config/index.ts⇄config-factory.ts 经 HEAD 双侧证实为既有，非本轮引入",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen5-b",
+      "label": "M5 fix-tests：拆掉本轮自造的 447 行违规（345+347，用例名逐名等价）+ 用正式用例钉死 M7",
+      "fit": 100,
+      "cases": "19/19",
+      "branch": "frontier-grow",
+      "parent": "gen2-b",
+      "unverified": [
+        "logging/index.ts 仍不可加载（contracts 未链 + enum 值导入）⇒ 工厂装配依旧是代码审查证据"
+      ],
+      "note": "反向证据与主代理 MAIN-06 完全同读数：BASE {asyncBatchCalls:0,dup:0} / MUTANT(删 :241) {asyncBatchCalls:1,dup:2}；把 rotation 文件指向变异副本 ⇒ 7 例中恰好 1 例红（只有 M7），说明钉的是守卫本身。主代理独立核对：23:44 抓的 28 用例名与拆分后 diff 为空，仓库聚合 99/99（7 文件）",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen5-a",
+      "label": "M5 fix-db：env 数值按序守卫 + 0=显式关闭超时（D-B）+ 2^31-1 上界（MAIN-07）+ 非字符串不外抛（MAIN-08）",
+      "fit": 100,
+      "cases": "51/51",
+      "branch": "frontier-grow",
+      "parent": "gen4-b",
+      "unverified": [
+        "schema.ts 不可加载（zod 未装）⇒ .nonnegative() 无执行断言，文件路径的上界是否也守住由 M5 审查腿定案",
+        "0 的端到端 getAll()→http/index.ts:79 依赖主代理对解析器的直驱读数而非真进程",
+        "auth-login 的'关闭时留 warn'落在 bootstrap/ 边界外，记为后续项"
+      ],
+      "note": "主代理亲自驱动 parseEnvConfigWithDiagnostics 复现全部读数：0/0.0/0e0/\" 0\"/0x0/00/-0/1e-999 → timeout=0 且零诊断；\"\"/\"  \" → empty（空串必须先于零，否则 D1 换门回来）；2147483648/4294967296/1e20 → too_large；maxConcurrency 的 0 → zero_not_allowed 而超大值仍合法（MAIN-10：没把计时器天花板搬到兄弟键）；{} /[] /10 /true → non_string_value 不再抛。反向证据：删上界→4 红，删空串先判→4 红且实测 \"\" 变成 0，删 typeof→11 红且 TypeError 复现",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen5-c",
+      "label": "M5 审查后修复：文件侧补 2^31-1 超时上界（漂移守卫）+ 别名主键优先并出 alias_conflict 诊断（用户裁决）+ spec 引用行号全量校正",
+      "fit": 100,
+      "cases": "36/36",
+      "branch": "frontier-grow",
+      "parent": "gen5-a",
+      "unverified": [
+        "schema.ts 不可加载（zod 未装）⇒ .max() 只有文本漂移守卫与静态审查，未执行",
+        "set()/merge() 仍是未校验入口，0/超大值可从那里进（本轮按裁决不加守卫）"
+      ],
+      "note": "尺子抓到真东西：改优先级后 fixer 原「后出现者写胜」用例立刻红（104/105），改判据必须同步改测试而不是改测试迁就实现；两方向实测 9000 + 1 条 alias_conflict",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    }
+  ],
+  "edges": [
+    {
+      "from": "root",
+      "to": "gen1-a"
+    },
+    {
+      "from": "root",
+      "to": "gen1-b"
+    },
+    {
+      "from": "gen1-a",
+      "to": "gen2-a"
+    },
+    {
+      "from": "gen1-b",
+      "to": "gen2-b"
+    },
+    {
+      "from": "root",
+      "to": "gen4-a"
+    },
+    {
+      "from": "gen2-a",
+      "to": "gen4-b"
+    },
+    {
+      "from": "root",
+      "to": "gen3-audit"
+    },
+    {
+      "from": "gen2-b",
+      "to": "gen5-b"
+    },
+    {
+      "from": "gen4-b",
+      "to": "gen5-a"
+    },
+    {
+      "from": "gen5-a",
+      "to": "gen5-c"
+    }
+  ],
+  "frontier": [
+    "gen4-a",
+    "gen3-audit",
+    "gen5-b",
+    "gen5-c"
+  ],
+  "stale_count": 0,
+  "fit_definition": "fit = round(pass / (pass + fail) * 100)，仅统计本机实际执行的 node:test 用例；unverified 记录未被可执行证据覆盖的边界数，fit 不许掩盖它",
+  "verify_command": "node docs/evolution/verify.mjs",
+  "last_run": {
+    "at": "2026-09-28T15:34:36.540Z",
+    "value": "M4 双修复全落：5 测试文件 68/68 fit=100（连跑 3 次读数一致）；baseline diff pre-gen4 = 新增10/改动8/删除0；M5 排队中"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "//": "探针用：让 tsc 也看 tests/。tests 里的 import 按 Node 24 要求写显式 .ts 扩展名，所以需要 allowImportingTsExtensions；rootDir 放开到包根，否则 tests/** 落在 src 之外会报 TS6059。上一版探针直接对独立 tsconfig 跑裸 tsc，得到 328 个 error TS，其中 158 个是 TS2307 Cannot find module '@zcode/contracts' —— 因为裸 tsc 不会先把工作区依赖构建出来。这一版改走包自己的 typecheck 脚本，由 turbo 先建依赖再检查。",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}
