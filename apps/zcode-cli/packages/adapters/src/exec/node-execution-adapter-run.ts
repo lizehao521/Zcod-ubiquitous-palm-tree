@@ -65,11 +65,11 @@ export class NodeExecutionAdapterRun extends NodeExecutionAdapterProcess {
             }
           }
         : undefined;
-    const legacyOutputEncoding = resolveLegacyExecutionOutputEncoding({
+    // 根因修复：同步 chcp 每次 run 冻结事件循环约 37 ms，改为异步；await 期间的取消仍由下方 :174 检查服务。
+    const legacyOutputEncoding = await resolveLegacyExecutionOutputEncoding({
       platform: this.platform,
       processEnv: this.processEnv,
     });
-    // 任务记录单独解析会重复同步执行 Windows chcp；复用执行时的编码值。
     internalOptions.onOutputEncodingResolved?.(legacyOutputEncoding);
     const file = useBashMergedOutput
       ? new BashFileOutput(
