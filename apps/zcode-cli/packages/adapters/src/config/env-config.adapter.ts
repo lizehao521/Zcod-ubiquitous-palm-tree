@@ -83,7 +83,9 @@ export type EnvConfigInvalidReason =
   | "zero_not_allowed"
   | "too_large"
   | "non_string_value"
-  | "unsupported_value";
+  | "unsupported_value"
+  /** 主键与别名同时给出且生效值不同：不忽略任何一侧，只说明哪条键被作废（用户裁决 D-B 续）。 */
+  | "alias_conflict";
 
 export interface ParsedEnvConfig {
   config: RuntimeConfigPatch;
@@ -134,6 +136,31 @@ export function parseEnvConfigWithDiagnostics(
   const prefix = options.prefix ?? DEFAULT_PREFIX;
   const config: RuntimeConfigPatch = {};
   const diagnostics: EnvConfigDiagnostic[] = [];
+  // 别名优先级状态（用户裁决 2026-09-28：主键赢、不一致必留痕）。
+  // timeoutSource 记当前生效值的来源键，timeoutValue 记该值，用来判断另一侧是否构成冲突。
+  let timeoutSource: "primary" | "alias" | undefined;
+  let timeoutValue: number | undefined;
+  const ZCODE_HTTP_TIMEOUT_KEY = `${prefix}HTTP_TIMEOUT`;
+  const ZCODE_TIMEOUT_KEY = `${prefix}TIMEOUT`;
+  void ZCODE_TIMEOUT_KEY; // 别名键仅用于诊断文案的对侧引用，先占位避免未使用告警
+  const timeoutKeyOf = (source: "primary" | "alias"): string =>
+    source === "primary" ? ZCODE_HTTP_TIMEOUT_KEY : ZCODE_TIMEOUT_KEY;
+  // 冲突诊断不改写生效值，只说明哪条键被作废：静默丢弃会让"超时被关掉"无人知晓。
+  const timeoutConflictDiagnostic = (
+    winningKey: string,
+    winningValue: number,
+    losingKey: string,
+    losingValue: number,
+  ): EnvConfigDiagnostic => ({
+    code: "env_config_invalid",
+    envKey: losingKey,
+    path: NETWORK_TIMEOUT_PATH,
+    value: renderEnvValue(losingValue),
+    reason: "alias_conflict",
+    severity: "warning",
+    message: `${losingKey}="${losingValue}" is ignored for ${NETWORK_TIMEOUT_PATH}: ${winningKey}="${winningValue}" wins (primary key takes precedence over its alias).`,
+    fallback: `${winningKey}=${winningValue}`,
+  });
 
   for (const [key, value] of Object.entries(env ?? {})) {
     if (!key.startsWith(prefix) || value === undefined) continue;
@@ -159,17 +186,33 @@ export function parseEnvConfigWithDiagnostics(
       if (!config.network) config.network = {};
       config.network.caCertFile = value;
     } else if (configKey === "HTTP_TIMEOUT" || configKey === "TIMEOUT") {
+      // 用户裁决（2026-09-28）：主键 ZCODE_HTTP_TIMEOUT 优先于别名 ZCODE_TIMEOUT，且两者不一致时必须留痕。
+      // 原实现是"Object.entries 插入序后来者写胜"，于是 ZCODE_TIMEOUT=0 能在用户写出 9000 之后
+      // 静默把超时关掉（= 不设防），那正是 D1 的终态换了一道门；只靠文档说明不解决"谁赢"不可陈述的问题。
+      const isPrimaryKey = configKey === "HTTP_TIMEOUT";
       const parsed = parseEnvNumberValue(value, NETWORK_TIMEOUT_RULE);
-      if (parsed.ok) {
-        if (!config.network) config.network = {};
-        config.network.timeout = parsed.value;
-      } else {
-        // 非法值必须"缺席"而不是取某个数，缺席才会让 config/index.ts:113 的 `!== undefined` 不成立、
-        // 由 ConfigPort.getAll() 回落默认超时。唯一被裁决放行的例外是字面 0（D-B：显式关闭），
-        // 它在 parsed.ok 分支里写入，不经过这条诊断。
+      if (!parsed.ok) {
+        // 非法值必须"缺席"而不是取某个数，缺席才会让 ConfigPort.getAll() 回落默认超时。
+        // 非法的一侧绝不覆盖另一侧已生效的合法值；唯一放行的"看起来非法"是字面 0（D-B，走 ok 分支）。
         diagnostics.push(
           invalidEnvDiagnostic(key, NETWORK_TIMEOUT_PATH, value, parsed.reason, NETWORK_TIMEOUT_FALLBACK),
         );
+      } else if (isPrimaryKey) {
+        if (timeoutSource !== undefined && timeoutValue !== parsed.value) {
+          diagnostics.push(timeoutConflictDiagnostic(key, parsed.value, timeoutKeyOf(timeoutSource), timeoutValue));
+        }
+        if (!config.network) config.network = {};
+        config.network.timeout = parsed.value;
+        timeoutSource = "primary";
+        timeoutValue = parsed.value;
+      } else if (timeoutSource === undefined) {
+        // 只给了别名：别名可用，但要在诊断里标明生效来源是别名。
+        if (!config.network) config.network = {};
+        config.network.timeout = parsed.value;
+        timeoutSource = "alias";
+        timeoutValue = parsed.value;
+      } else if (timeoutValue !== parsed.value) {
+        diagnostics.push(timeoutConflictDiagnostic(ZCODE_HTTP_TIMEOUT_KEY, timeoutValue, key, parsed.value));
       }
     }
 
