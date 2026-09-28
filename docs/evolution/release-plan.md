@@ -16,11 +16,14 @@
 | C7 | `feat(config): network.timeout 字面 0 = 显式关闭超时（用户裁决 D-B）` | M5 产物：`env-config.adapter.ts`、`config/schema.ts`、`specs/runtime-env-config/spec.md`、对应测试 | 待 M5 |
 | C8 | `docs(evolution): 五轮谱系闭合与总结` | `docs/evolution/{summary.md,tree.json,tree.txt,gen5/*}` | 最后 |
 
+本表是计划原文，状态列停写在"计划时点"；实际落地以文末「落地情况」表为准。
+
 ### 已知偏离「一个功能一个提交」的一处，及原因
 
 C3 把两件事放进一个提交：M1/M2 的 env 数值守卫，与 M4 的 key→default 表收口。
 原因是两者都落在 `config/index.ts` 同一文件里（守卫需要桶导出 `parseEnvConfigWithDiagnostics`，
-收口把同文件从 500 行减到 364 行），按文件拆提交会让前一个提交自身缺少可导入的出口，
+收口把同文件从 491 行（`git show afb40aa^:...config/index.ts | wc -l` 实测；
+台账曾误记 500，已就地更正）减到 364 行），按文件拆提交会让前一个提交自身缺少可导入的出口，
 而按 hunk 拆（`git add -p`）在本环境不可交互、风险高于收益。
 代价如实写在这里：**这个提交比理想的大，审查者要同时读两处变更**；
 body 里会分两段说清各自动机，不装作是一件事。
@@ -36,15 +39,43 @@ body 里会分两段说清各自动机，不装作是一件事。
 本机代理配置、凭据状态与 CI 前置失败原因属**个人工作目录与本机环境信息**，
 按 `apps/zcode-cli/AGENTS.md`「开源内容与敏感信息」不入库；记录留在本地运维笔记
 （`.hermess-snapshots/release-notes-local.md`，已被 gitignore）。
-入库部分只保留两条事实性结论：
+入库部分只保留两条事实性结论，以及一条后来被实测推翻的预测（保留原文并标出，不静默改写）：
 
 1. 本 checkout 不含根 `packages/`、`scripts/`（`git ls-files` 实测 0 条），
    而 `.github/workflows/ci.yml` 的 typecheck/lint/architecture/build 指向它们 →
-   推送后 CI 会出现**结构性红灯**，与本次改动无关。
+   在这个裁剪树上直接推 CI 必然出现**结构性红灯**，与本次改动无关。
+   ~~推送后 CI 会出现结构性红灯~~：**已被实测推翻**，见下节。红灯的成因不是缺 CI 配置，
+   而是缺 CI 要构建的那棵树；闭合方式是把改动重放到全量底座上，而不是改他们的 workflow。
 2. 本轮真实可执行证据只有 `node --test`（`node docs/evolution/verify.mjs` 的三态表）。
    `pnpm lint` / `pnpm typecheck` 在本环境无法执行，任何提交信息都不得声称它们通过。
+   全量底座上由 CI 跑出的结论见下节；两条证据链分开记账，不互相冒名。
 
-## 落地情况（截至 M5 两腿审查中）
+## CI 实测结论（全量底座，PR#1 head `a82fc12`，run 36460317426）
+
+搬运方式：`evolution/hermes-m1-m5-full` = 目标仓库 `main` 的全量树 + 本轮 10 个提交 cherry-pick 重放；
+与本仓库历史无共同祖先，用 `--allow-unrelated-histories -X ours` 合并，
+`README`/`LICENSE` 保留项目版本。本仓库的 `main` 与裁剪树不受影响。
+
+| 作业 | 结论 | 关键步骤 |
+| --- | --- | --- |
+| Lint | success | `pnpm lint` |
+| TypeCheck | success | `pnpm typecheck` |
+| Architecture Check | success | `pnpm architecture:check` |
+| Build | success | `pnpm build` —— 上一版 `61c3ede` 正是在这一步失败（7 处 TS2345） |
+| Test | success | `pnpm --filter @zcode/desktop run test --if-present` |
+
+两条不体面、但必须写进台账的读数，是这次"绿"的边界：
+
+- **根 `pnpm typecheck` 不覆盖 `apps/zcode-cli`**（它只构建 `packages/*`）。
+  所以 TypeCheck 作业绿灯不能证明 M1–M5 的改动没有类型错误；那 7 处 TS2345 是 `pnpm build` 抓出来的。
+  把 `apps/zcode-cli` 纳入根 typecheck 会暴露既有类型债，是一次独立改动，不与本修复混做。
+- **Test 作业没有牙齿**：`@zcode/desktop` 的 `package.json` 里没有 `test` 脚本（实测），
+  `--if-present` 因而是空操作；`ci.yml` 中 `zcode-cli` 出现 0 次 →
+  本轮的 8 个可加载测试文件 / 105 例**不在任何 CI 作业里执行**，
+  它们只在本地 `node --test` 尺子下成立。要让 CI 真跑它们，得先定跑器形态
+  （Node 原生类型擦除，还是先构建再跑），这是产品级选择，等对齐后再动。
+
+## 落地情况（截至 CI 转绿）
 
 | 已落提交 | 主题 | 对应本计划 |
 | --- | --- | --- |
@@ -53,8 +84,15 @@ body 里会分两段说清各自动机，不装作是一件事。
 | `8dc082b` | `docs(specs): 记录 core 业务层直连 node:fs 的边界例外` | C6 |
 | `bcc2bba` | `chore: 忽略本地进化快照目录` | C1 |
 | `afb40aa` | `fix(config): 非法 ZCODE_* 数值不再静默降级，key→default 表收口为单一来源` | C3 **+ C7 合并** |
+| `ab419db` | `fix(config): 文件侧补超时上界，别名改为主键优先且冲突必留痕` | C3 的后续裁决（D-C + 用户裁决别名口径） |
+| `821128b` | `docs(evolution): 进化闭环的判据工具、五轮记录与主代理台账` | C2 |
+| `61d7388` | `docs(evolution): 五轮谱系闭合与总结` | C8 |
+| `01fc6f2` | `docs(evolution): 交付状态入册并校正聚合数字` | C8 的更正 |
+| `32d407f` | `docs(evolution): 把会自毁的写死数字换成现算指令` | C8 的更正 |
 
-待落：C2（判据与工具）、C8（谱系闭合与总结）。
+C1–C8 全部落完，无待落项。全量底座那一侧另有 `61c3ede`（并入目标仓库 `main`）
+与 `a82fc12`（修 `pnpm build` 抓出的 7 处类型错误），它们只存在于
+`evolution/hermes-m1-m5-full`，不在本仓库历史上。
 
 合并偏离说明：计划里 C3（M1/M2/M4 的配置守卫与表收口）与 C7（M5 的 D-B 语义）是两个提交，
 实际合成一个（`afb40aa`）。原因是三者都落在同两个文件里
