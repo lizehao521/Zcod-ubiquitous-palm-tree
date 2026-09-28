@@ -26,12 +26,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       # 根 typecheck 是显式列举的 `tsc -b packages/*`，覆盖不到 apps/zcode-cli；
-      # CLI 侧的类型检查此前只写在 apps/zcode-cli/AGENTS.md「验证」里、没有作业执行它
-      # —— 本仓库那 7 处 TS2345 就是这么漏到 Build 才现形的。
-      # 用 --filter 而不是文档里的 --dir：AGENTS.md 写的 `pnpm --dir apps/zcode-cli typecheck`
-      # 在 CI 上实测失败（sh: 1: turbo: not found，TypeCheck 作业 exit 1），
-      # 同一脚本经 `pnpm --filter zcode-cli run typecheck` 调用实测通过
-      # （turbo 扇出 17 个包、27 个任务全成功、error TS 0、1m37s）。
+      # CLI 侧的类型检查只写在 apps/zcode-cli/AGENTS.md「验证」里，此前没有任何作业执行它。
+      # 这里用 --filter 而不是文档里那条 `pnpm --dir apps/zcode-cli typecheck`：
+      # apps/zcode-cli 是自带 pnpm-workspace.yaml 与 pnpm-lock.yaml 的嵌套工作区，
+      # turbo 只在它自己的 devDependencies 里，根 `pnpm install --frozen-lockfile` 不会装它，
+      # 以该目录为 cwd 解析可执行文件就得到 `turbo: not found`。
+      # 残留风险：--filter 形态依赖 runner 提供的全局 turbo；干净修法是在 CI 里安装嵌套工作区
+      # 依赖，或把 turbo 提到根 devDependencies —— 两者都动依赖，属独立一次改动。
       - run: pnpm --filter zcode-cli run typecheck
 
   lint:
@@ -95,7 +96,7 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @zcode/desktop run test --if-present
-      # 上一行在本仓库是空操作：实测 32 个工作区包没有任何一个声明 test 脚本，
-      # 所以 --if-present 什么都不跑却报 success。这一行走 adapters 包里新声明的入口，
-      # 把本轮 8 个测试文件 / 105 例真的跑起来；保留 desktop 那行不动，等它自己有测试时自然生效。
+      # 上一行在本仓库落地时是空操作：当时没有任何工作区包声明 test 脚本，
+      # `--if-present` 什么都不跑却报 success。这一行走 adapters 包里声明的入口，
+      # 把该包 tests/ 下的用例真的跑起来；保留 desktop 那行不动，等它自己有测试时自然生效。
       - run: pnpm --filter @zcode/adapters run test
