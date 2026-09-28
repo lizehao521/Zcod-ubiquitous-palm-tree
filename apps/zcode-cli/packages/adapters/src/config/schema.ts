@@ -6,6 +6,11 @@ const stringRecordSchema = z.record(z.string(), z.string());
 const unknownRecordSchema = z.record(z.string(), z.unknown());
 const positiveNumberSchema = z.number().finite().positive();
 const positiveIntegerSchema = z.number().int().positive();
+// D-B：只有 network.timeout 接受字面 0，语义是"显式关闭请求超时"，与 env 路径
+// （env-config.adapter.ts 的 parseEnvNumberValue(value, allowZero=true)）同判据；
+// 同一字段两套规则正是 D1 的根因形态。maxConcurrency 等其余字段继续用 positiveNumberSchema，
+// 它们的 0 没有合法语义（seatGate({limit:0}) 是挂死）。
+const nonNegativeFiniteNumberSchema = z.number().finite().nonnegative();
 const modelStreamSchema = z.object({
   idleTimeoutMs: positiveNumberSchema.optional(),
 });
@@ -27,7 +32,7 @@ const networkSchema = z.object({
   httpProxy: z.string().min(1).optional(),
   noProxy: z.string().min(1).optional(),
   caCertFile: z.string().min(1).optional(),
-  timeout: positiveNumberSchema.optional(),
+  timeout: nonNegativeFiniteNumberSchema.optional(),
 });
 
 const featuresSchema = z.object({

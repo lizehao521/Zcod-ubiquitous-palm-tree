@@ -22,7 +22,11 @@ import {
 } from "@zcode/shared/workspace-hook-discovery";
 import { createConfigPort } from "./index.js";
 import { loadFileConfig, getDefaultConfigPath, type LoadedConfig } from "./file-config.adapter.js";
-import { parseEnvConfig } from "./env-config.adapter.js";
+import {
+  parseEnvConfig,
+  parseEnvConfigWithDiagnostics,
+  type EnvConfigDiagnostic,
+} from "./env-config.adapter.js";
 import { mergeConfigs, createPrioritizedConfig } from "./config-merger.js";
 import { createNodeLoggerFactory } from "../logging/index.js";
 import {
@@ -167,10 +171,16 @@ export function createConfig(options: ConfigFactoryOptions = {}): ConfigResult {
   const projectConfigFiles = discoveredProjectConfigs.files;
   const projectSummary = discoveredProjectConfigs;
   const projectDiagnostics = discoveredProjectConfigs.diagnostics;
+  // Env 解析提前到上报之前：诊断必须与 user/project 诊断走同一批 logConfigDiagnostics 上报，
+  // parseEnvConfigWithDiagnostics 对 options.env 是纯读取，提前不改变合并顺序与优先级。
+  const { config: envConfig, diagnostics: envDiagnostics } = parseEnvConfigWithDiagnostics(
+    options.env ?? process.env,
+  );
   // 配置 diagnostics 过去只返回给调用方，用户导出日志时看不到加载失败或被跳过的 MCP server。
   // 在汇总入口统一写 warn，保留具体文件路径和 JSON path，方便定位迁移配置问题。
   logConfigDiagnostics({
     env: options.env,
+    envDiagnostics,
     loggerFactory: options.loggerFactory,
     projectDiagnostics,
     userDiagnostics: userConfigResult.diagnostics,
@@ -188,8 +198,7 @@ export function createConfig(options: ConfigFactoryOptions = {}): ConfigResult {
     configs.push(createPrioritizedConfig(projectConfig.config, ConfigScope.Project));
   }
 
-  // 4. Environment variables
-  const envConfig = parseEnvConfig(options.env ?? process.env);
+  // 4. Environment variables（已在上报前解析，见上方 parseEnvConfigWithDiagnostics）
   if (Object.keys(envConfig).length > 0) {
     configs.push(
       createPrioritizedConfig(
@@ -399,6 +408,7 @@ function resolveEffectiveMcpServers(input: {
 
 function logConfigDiagnostics(input: {
   env?: Record<string, string | undefined>;
+  envDiagnostics: EnvConfigDiagnostic[];
   loggerFactory?: LoggerFactory;
   projectDiagnostics: LoadedConfig["diagnostics"];
   userDiagnostics: LoadedConfig["diagnostics"];
@@ -407,7 +417,7 @@ function logConfigDiagnostics(input: {
     ...input.userDiagnostics.map((diagnostic) => ({ ...diagnostic, configScope: "user" })),
     ...input.projectDiagnostics.map((diagnostic) => ({ ...diagnostic, configScope: "project" })),
   ];
-  if (diagnostics.length === 0) return;
+  if (diagnostics.length === 0 && input.envDiagnostics.length === 0) return;
 
   const loggerFactory = input.loggerFactory ?? createNodeLoggerFactory({ env: input.env });
   const logger = loggerFactory.createLogger("zcode").child({
@@ -422,6 +432,21 @@ function logConfigDiagnostics(input: {
       diagnosticMessage: diagnostic.message,
       diagnosticPath: diagnostic.path,
       event: resolveConfigDiagnosticLogEvent(diagnostic.code),
+      severity: diagnostic.severity,
+    });
+  }
+  // Env 诊断复用同一 logger 通道与字段命名（configScope/diagnosticCode/diagnosticMessage/
+  // diagnosticPath/event/severity），来源以 envKey 标识而非 filePath；此前诊断有产出但无消费者，
+  // 非法 env 是静默降级，违反「错误向上冒泡/可观测」，此处在唯一汇总入口补上上报。
+  for (const diagnostic of input.envDiagnostics) {
+    logger.warn("Env config value ignored", {
+      configScope: "env",
+      diagnosticCode: diagnostic.code,
+      diagnosticMessage: diagnostic.message,
+      diagnosticPath: diagnostic.path,
+      diagnosticReason: diagnostic.reason,
+      envKey: diagnostic.envKey,
+      event: "config.env.invalid",
       severity: diagnostic.severity,
     });
   }
