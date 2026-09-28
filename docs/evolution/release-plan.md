@@ -148,13 +148,23 @@ run 36468381368（head `d5acd53`）的读数：
   （把 `node?.x` 的三元拆成各自对象上的访问；删掉那条恒真断言或改成断言 ConfigPort 未被写入），
   不动实现、不动构建配置以外的东西。
 
-### 新闸门是否会咬（变异反向验证，进行中）
+### 新闸门是否会咬（变异反向验证，已验）
 
 作业绿不等于闸门有效，前面已经两次被自己的仪器骗到。所以在探针分支 `evolution/ci-probe`
 的 head `972ef33` 注入一处落在 `include`（`src/**/*`）内的类型错误
-（`adapters/src/config/env-config.adapter.ts` 里 `export const …: number = "deliberate-type-error"`），
-期望 `PROBE CLI TypeCheck` 变红并把这条列进读数；若仍报 0 错误，则前面 `debt = 0` 的读数一并作废。
-该分支是丢弃用的，读数取完就连分支一起删，不带进交付分支。
+（`adapters/src/config/env-config.adapter.ts` 里 `export const …: number = "deliberate-type-error"`）。
+run 36469253096 的读数：**闸门会咬**——
+
+- `PROBE CLI TypeCheck` 作业 failure，读数 `TOTAL_TS_ERRORS=1`、`1 error TS2322`、`FILES_WITH_ERRORS=1`；
+- 同一错误也被 `Build` 作业抓到（Build failure，Test 因 needs 被 skip）⇒ 两道闸门都真的覆盖这个包；
+- 由此前一条 `debt = 0` 的读数才可信：同一台仪器喂进 1 条错误就报 1 条。
+
+顺带量到一个顺序性质：包的 typecheck 写成 `tsc --noEmit && tsc --noEmit -p tsconfig.test.json`，
+src 先失败时 `&&` 短路，`tests/` 那 3 条就不报了（这一轮读数里 `落在 tests/ 的=0`，
+而上一轮 src 干净时报 3 条）。如果将来真要采纳这个形态，
+建议改成 `; ` 串接或两条独立 turbo task，否则 src 一红就看不见 tests 的账。
+
+该探针分支是丢弃用的，读数取完就连分支一起删，不带进交付分支。
 
 ### 本链验证范围声明（哪些真跑过，哪些跑不了）
 
