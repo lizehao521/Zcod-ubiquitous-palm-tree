@@ -70,22 +70,107 @@ body 里会分两段说清各自动机，不装作是一件事。
 | Build | success | `pnpm build` —— 上一版 `61c3ede` 正是在这一步失败（7 处 TS2345） |
 | Test | success | `pnpm --filter @zcode/desktop run test --if-present` |
 
-两条不体面、但必须写进台账的读数，是这次"绿"的边界：
+head 走到 `84cdc26` 后同样是五个作业全 success，差别在两步骤：TypeCheck 多出
+`pnpm --filter zcode-cli run typecheck`，Test 多出 `pnpm --filter @zcode/adapters run test`，
+读数见下两节。
 
-- **根 `pnpm typecheck` 覆盖不到 `apps/zcode-cli`**：它是一条显式列举的
-  `tsc -b packages/rpc … packages/desktop/tsconfig.host.json`（11 项，实测其中没有 `apps/`）。
-  所以 TypeCheck 作业绿灯不能证明 M1–M5 的改动没有类型错误；那 7 处 TS2345 是 Build 作业抓出来的。
-  成因不是 CLI 包没类型检查——`apps/zcode-cli` 自己有 `typecheck: turbo run typecheck`，
-  且 `pnpm-workspace.yaml` 里它就是工作区成员；只是根 TypeCheck 作业没调用它，
-  而 `build: pnpm -r build` 递归到了它。
-  把 `apps/zcode-cli` 纳入根 typecheck 会暴露既有类型债，是一次独立改动，不与本修复混做。
-- **Test 作业没有牙齿**：`@zcode/desktop` 的 `package.json` 里没有 `test` 脚本（实测），
-  `--if-present` 因而是空操作；`ci.yml` 与 `release.yml` 中 `zcode-cli`、`apps/` 均出现 0 次（实测）→
-  本轮的 8 个可加载测试文件 / 105 例**不在任何 CI 作业里执行**，
-  它们只在本地 `node --test` 尺子下成立。
-  但别读成"CI 完全不碰这个包"：`pnpm build` 会编译它，那 7 处 TS2345 正是在 CLI 包里被抓出来的——
-  **被编译、不被测试**。要让 CI 真跑这些用例，得先定跑器形态
-  （Node 原生类型擦除，还是先构建再跑），这是产品级选择，等对齐后再动。
+两条不体面、但必须写进台账的读数，是当时这条"绿"的边界。原文保留在下面，闭合读数紧跟其后，
+不改成"一开始就知道"的样子。
+
+> **边界一（当时的判断）**：根 `pnpm typecheck` 覆盖不到 `apps/zcode-cli`：它是一条显式列举的
+> `tsc -b packages/rpc … packages/desktop/tsconfig.host.json`（11 项，实测其中没有 `apps/`）。
+> 所以 TypeCheck 作业绿灯不能证明 M1–M5 的改动没有类型错误；那 7 处 TS2345 是 Build 作业抓出来的。
+> 成因不是 CLI 包没类型检查——`apps/zcode-cli` 自己有 `typecheck: turbo run typecheck`，
+> 且 `pnpm-workspace.yaml` 里它就是工作区成员；只是根 TypeCheck 作业没调用它，
+> 而 `build: pnpm -r build` 递归到了它。
+> 当时结论：把 `apps/zcode-cli` 纳入根 typecheck 会暴露既有类型债，是一次独立改动，不与本修复混做。
+
+闭合读数取自 head `84cdc26`（run 36468163831，五个作业全 success）：
+
+1. **TypeCheck 空洞已闭合，且"会暴露一堆债"的假设被实测推翻。**
+   作业现在两步都跑：`pnpm typecheck`（根，显式 11 项 `tsc -b`）+
+   `pnpm --filter zcode-cli run typecheck`。作业日志里能看到后者真的执行了：
+   `Running typecheck in 17 packages`、`Tasks: 27 successful, 27 total`、
+   `Cached: 0 cached`、`Time: 1m39.47s`。**既有类型债 = 0 处 `error TS`**，
+   代价只是冷缓存多花 1m39s。
+   - 落地时踩到一个真问题：`apps/zcode-cli/AGENTS.md` 明文那条
+     `pnpm --dir apps/zcode-cli typecheck` 在 CI 上失败（`sh: 1: turbo: not found`，
+     run 36466186122 的 TypeCheck exit 1，Build/Test 被连带 skip）。
+     根因：`apps/zcode-cli` 是自带 `pnpm-workspace.yaml` + `pnpm-lock.yaml` 的嵌套工作区，
+     `turbo` 只在它自己的 devDependencies（^2.4.0）里，根 `pnpm install --frozen-lockfile` 不装它。
+   - **残留风险（未修，属动依赖，需单独定）**：`--filter` 形态依赖 runner 提供的全局 turbo 2.9.14，
+     探针日志里有这条 WARNING。干净修法是在 CI 里再装一次嵌套工作区依赖，或把 turbo 提到根 devDeps。
+> **边界二（当时的判断）**：Test 作业没有牙齿。`@zcode/desktop` 的 `package.json` 里没有 `test` 脚本
+> （实测），`--if-present` 因而是空操作；`ci.yml` 与 `release.yml` 中 `zcode-cli`、`apps/` 均出现 0 次
+> （实测）→ 本轮的 8 个可加载测试文件 / 105 例**不在任何 CI 作业里执行**，
+> 它们只在本地 `node --test` 尺子下成立。但别读成"CI 完全不碰这个包"：`pnpm build` 会编译它，
+> 那 7 处 TS2345 正是在 CLI 包里被抓出来的——**被编译、不被测试**。
+> 当时结论：要让 CI 真跑这些用例，得先定跑器形态（Node 原生类型擦除，还是先构建再跑），
+> 这是产品级选择，等对齐后再动。
+
+2. **Test 空洞已闭合，跑器形态就是仓库自己已有的那套。** `@zcode/adapters` 声明了 `test` 入口，
+   Test 作业调用它；ubuntu + `node: v24.21.0` 的作业日志为
+   `> node --test --test-reporter=tap "tests/*.test.ts"` →
+   `# tests 105 / # suites 11 / # pass 105 / # fail 0 / # cancelled 0 / # skipped 0 / # todo 0`。
+   "CI 的 Node 24 能吃 TS 类型擦除"因此是被执行证明的，不是推断；
+   选它的理由不是省事：全仓没有任何 `vitest` 依赖（实测 0 处），
+   仓库自带的 4 个 `.test.ts` 用的同样是 `node:test` + `node:assert/strict`。
+   - **装牙齿的当轮就抓到一条真缺陷**：旧断言 `order[0] === "tick"` 的隐含前提是
+     "子进程比一个事件循环 turn 慢"。Windows 恰好满足；Linux 上 `cmd.exe` 不存在、
+     spawn 立刻以 ENOENT 失败，rejection 的微任务排在 `setImmediate`（宏任务）之前 ⇒
+     `# pass 104 / # fail 1`，且**两次独立 run 读数一致 —— 不是 flaky，是前提错**。
+     修法与反向证据见提交 `d56f2a1` 与 `specs/windows-code-page/spec.md` §5 的 S8。
+   - desktop 那行 `--if-present` 原样保留：落地时实测 32 个工作区包 0 个声明 `test` 脚本，
+     所以它当时是空操作；现在它仍是空操作，只是不再等于"Test 作业什么都没跑"。
+   - 两次仪器假绿记在这里当反面教材（都是我自己的错，不是被测物的）：
+     `命令 | tee 日志` 在 Actions 默认 `bash -e`（无 pipefail）下退出码取 tee，
+     再叠 `continue-on-error: true`，于是 `fail 1` 被报成 success；
+     以及首条 `grep` 无匹配返回 1 会让 `bash -e` 直接中断读数步骤 —— 0 错误反而让读数步骤失败。
+
+### 第三个洞：tests/ 不被任何类型尺子覆盖（读数已取，改动等你定）
+
+包 `tsconfig.json` 的 `include` 只有 `src/**/*`，而 `node --test` 的类型擦除**不做类型检查**，
+所以本轮测试文件自身的类型错误此前量不到。把它纳入类型检查的探针形态是
+`tsc --noEmit && tsc --noEmit -p tsconfig.test.json`（`include` 加 `tests/**/*`、`rootDir` 放到包根、
+`allowImportingTsExtensions` —— 测试按 Node 24 要求写显式 `.ts` 说明符），再由 turbo 先建工作区依赖。
+run 36468381368（head `d5acd53`）的读数：
+
+- `TOTAL_TS_ERRORS=3`，**落在 `tests/` 的 = 3，落在 `src/` 的 = 0**，全是 `TS2339`：
+  - `tests/env-config-timeout-zero.test.ts:28` 两处 —— 三元把两种形状并成 union 后，
+    `node?.timeout` 与 `node?.maxConcurrency` 各自在另一支上不存在；
+  - `tests/env-config.test.ts:40` 一处 —— `Property 'timeout' does not exist on type 'never'`。
+    上一行已经断言 `config.network === undefined`，于是 `config.network?.timeout` 恒为 undefined：
+    **这是一条形同虚设的断言**，tsc 报成类型错误，等于顺手抓到一条不证明任何东西的用例。
+- 第一次量错了：用独立 tsconfig 跑裸 `tsc` 得到 `TOTAL_TS_ERRORS=328`，其中 158 条
+  `TS2307 Cannot find module '@zcode/contracts'`、100 条连锁 `TS2339` ——
+  裸 tsc 不先构建工作区依赖，量的是仪器而不是被测物。
+- 这条改动会不会让 CI 变红：会，除非同时修掉那 3 处。修法是测试侧的两行改写
+  （把 `node?.x` 的三元拆成各自对象上的访问；删掉那条恒真断言或改成断言 ConfigPort 未被写入），
+  不动实现、不动构建配置以外的东西。
+
+### 新闸门是否会咬（变异反向验证，进行中）
+
+作业绿不等于闸门有效，前面已经两次被自己的仪器骗到。所以在探针分支 `evolution/ci-probe`
+的 head `972ef33` 注入一处落在 `include`（`src/**/*`）内的类型错误
+（`adapters/src/config/env-config.adapter.ts` 里 `export const …: number = "deliberate-type-error"`），
+期望 `PROBE CLI TypeCheck` 变红并把这条列进读数；若仍报 0 错误，则前面 `debt = 0` 的读数一并作废。
+该分支是丢弃用的，读数取完就连分支一起删，不带进交付分支。
+
+### 本链验证范围声明（哪些真跑过，哪些跑不了）
+
+本机（Windows，Node v24.13.0，裁剪检出无 `node_modules`）**实际执行**：
+
+- `node --test`：`windows-code-page` 单文件 12/12；批形态与包内形态各 105/105；
+- `node docs/evolution/verify.mjs` 连续 3 次同读数（全量树 `files=12 PASS=8 FAIL=0 WARN=4 105/109 fit=92`；
+  裁剪树 `files=8 PASS=8 FAIL=0 WARN=0 105/105 fit=100`）；
+- 变异反向证据：实现改回同步读取 ⇒ 该文件 12 例中 9 例变红；
+  第一次变异（阻塞 40ms 但仍 await 真实子进程）**没有**变红 —— 说明"阻塞一会儿"不等于"同步实现"；
+- JSON / tsconfig 可解析检查、`ci.yml` 的 tabs / U+FFFD / 残留 run id 检查（全部为 0）。
+
+本机**未执行**，任何位置都不写成通过：`pnpm lint`、`pnpm typecheck`、
+`pnpm --dir apps/zcode-cli typecheck`、`pnpm architecture:check`（无 oxlint/typescript/turbo 二进制，
+根 `scripts/` 缺失）。Linux 侧行为一律由 GitHub Actions 日志读数证明，
+本文件里每条 Linux 结论都附了对应的 run 与作业名。
 
 ## 落地情况（截至 CI 转绿）
 
@@ -105,6 +190,22 @@ body 里会分两段说清各自动机，不装作是一件事。
 C1–C8 全部落完，无待落项。全量底座那一侧另有 `61c3ede`（并入目标仓库 `main`）
 与 `a82fc12`（修 `pnpm build` 抓出的 7 处类型错误），它们只存在于
 `evolution/hermes-m1-m5-full`，不在本仓库历史上。
+
+### CI 补洞链路的提交（本地 main ↔ 分支 cherry-pick）
+
+两个改动各自独立提交，先经用户确认才推 `evolution/hermes-m1-m5-full`：
+
+| 本地 main | 分支上 | 主题 |
+| --- | --- | --- |
+| `eaca16a` | `3686426` | `test(adapters): 为包内 8 个测试文件声明可被调用的 test 入口` |
+| `d1d95f0` | `fc9ff9a` | `ci: 把 AGENTS.md 已写的 CLI typecheck 与测试入口接进作业` |
+| `d56f2a1` | `0a3052a` | `test(windows-code-page): 非阻塞断言的前提改由测试自己保证（Linux CI 实测 fail 1）` |
+| `2e5fce4` | `84cdc26` | `fix(ci): TypeCheck 作业改用实测可用的 --filter 形式` |
+| `f9c5b81` | 待推 | `docs(ci): 作业注释只留可泛化的原因，读数搬回台账` |
+
+说明：`d1d95f0` 接进去的 `--dir` 形式在 CI 上失败，故有 `2e5fce4` 一条修正；
+两条都是同一处作业的不同形态，不合并成一个提交，保留"先接错、再由 CI 纠正"的顺序，
+免得读史时以为一次就接对了。
 
 合并偏离说明：计划里 C3（M1/M2/M4 的配置守卫与表收口）与 C7（M5 的 D-B 语义）是两个提交，
 实际合成一个（`afb40aa`）。原因是三者都落在同两个文件里
