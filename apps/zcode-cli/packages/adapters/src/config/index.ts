@@ -12,6 +12,13 @@ import {
   ConfigScope,
   DefaultRuntimeConfig as DefaultConfig,
 } from "@zcode/contracts";
+// 键清单、默认值路径与 ?? 回落统一由 resolve-snapshot.ts 持有（本文件不再各写一份）。
+import {
+  assembleConfigSnapshot,
+  documentedDefaultOf,
+  resolveConfigValue,
+  type ConfigLookup,
+} from "./resolve-snapshot.js";
 
 type Handler<K extends ConfigKey> = (value: ConfigValue<K>, prev: ConfigValue<K>) => void;
 type AllHandler = (key: ConfigKey, value: unknown, prev: unknown) => void;
@@ -39,6 +46,14 @@ class ConfigStore {
   get<K extends ConfigKey>(key: K): ConfigValue<K> | undefined {
     const entry = this.store.get(key);
     return entry?.value as ConfigValue<K>;
+  }
+
+  /**
+   * 暴露成快照解析器需要的读取器：只回答「已存值或 undefined」，不掺任何缺省逻辑，
+   * 回落由 resolve-snapshot.ts 单点负责，避免这里长成第二条回落路径。
+   */
+  lookup(): ConfigLookup {
+    return (key: string) => this.get(key as ConfigKey);
   }
 
   has(key: ConfigKey): boolean {
@@ -184,7 +199,12 @@ class ConfigStore {
         this.set(ConfigKey.ToolConcurrencyMax, config.toolConcurrency.maxConcurrency, scope);
     }
     if (config.modelAnomalyGuard) {
-      const previous = this.get(ConfigKey.ModelAnomalyGuard) ?? DefaultConfig.modelAnomalyGuard;
+      // 深合并的缺省同样走唯一回落点（原先这里另写了一份 `?? DefaultConfig.modelAnomalyGuard`）。
+      const previous = resolveConfigValue(
+        ConfigKey.ModelAnomalyGuard,
+        this.lookup(),
+        DefaultConfig,
+      ) as RuntimeConfig["modelAnomalyGuard"];
       this.set(
         ConfigKey.ModelAnomalyGuard,
         {
@@ -195,7 +215,7 @@ class ConfigStore {
       );
     }
     if (config.hooks) {
-      const previous = this.get(ConfigKey.Hooks) ?? DefaultConfig.hooks;
+      const previous = resolveConfigValue(ConfigKey.Hooks, this.lookup(), DefaultConfig) as RuntimeConfig["hooks"];
       this.set(
         ConfigKey.Hooks,
         {
@@ -245,99 +265,24 @@ export class ConfigPortImpl implements ConfigPort {
   }
 
   get<K extends ConfigKey>(key: K): ConfigValue<K> {
-    const value = this.store.get(key);
+    // 回落只有一处（resolveConfigValue）；本方法不再自己 switch 一遍默认值。
+    const value = resolveConfigValue(key, this.store.lookup(), DefaultConfig) as
+      | ConfigValue<K>
+      | undefined;
     if (value !== undefined) return value;
-
-    // Fallback to default config
-    const defaultValue = getDefaultValue(key) as ConfigValue<K> | undefined;
-    if (defaultValue !== undefined) return defaultValue;
 
     throw new Error(`Config key not found: ${key}`);
   }
 
   getAll(): RuntimeConfig {
-    return {
-      modelStream: {
-        idleTimeoutMs:
-          this.store.get(ConfigKey.ModelStreamIdleTimeout) ??
-          DefaultConfig.modelStream.idleTimeoutMs,
-      },
-      permission: {
-        mode: this.get(ConfigKey.PermissionMode),
-        allowedTools: this.get(ConfigKey.PermissionAllowedTools),
-        disallowedTools: this.get(ConfigKey.PermissionDisallowedTools),
-        autoApproveHighRisk: this.get(ConfigKey.PermissionAutoApproveHighRisk),
-        allowMediumRiskInAuto: this.get(ConfigKey.PermissionAllowMediumRiskInAuto),
-      },
-      storage: {
-        dir: this.store.get(ConfigKey.StorageDir) ?? DefaultConfig.storage.dir,
-        sessionDbPath:
-          this.store.get(ConfigKey.StorageSessionDbPath) ?? DefaultConfig.storage.sessionDbPath,
-      },
-      network: {
-        httpProxy: this.store.get(ConfigKey.HttpProxy),
-        noProxy: this.store.get(ConfigKey.NoProxy),
-        caCertFile: this.store.get(ConfigKey.CaCertFile),
-        timeout: this.store.get(ConfigKey.HttpTimeout) ?? DefaultConfig.network.timeout,
-      },
-      features: {
-        compact: this.store.get(ConfigKey.FeatureCompact) ?? true,
-        rewind: this.store.get(ConfigKey.FeatureRewind) ?? true,
-        subagent: this.store.get(ConfigKey.FeatureSubagent) ?? true,
-        memory: this.store.get(ConfigKey.FeatureMemory) ?? true,
-        skill: this.store.get(ConfigKey.FeatureSkill) ?? true,
-        mcp: this.store.get(ConfigKey.FeatureMcp) ?? true,
-      },
-      memory: {
-        use: this.store.get(ConfigKey.MemoryUse) ?? DefaultConfig.memory.use,
-      },
-      mcp: {
-        servers: this.store.get(ConfigKey.McpServers) ?? DefaultConfig.mcp.servers,
-      },
-      plugins: {
-        dirs: this.store.get(ConfigKey.PluginsDirs) ?? DefaultConfig.plugins.dirs,
-        enabled: this.store.get(ConfigKey.PluginsEnabled) ?? DefaultConfig.plugins.enabled,
-        enabledPlugins:
-          this.store.get(ConfigKey.PluginsEnabledPlugins) ?? DefaultConfig.plugins.enabledPlugins,
-        extraKnownMarketplaces:
-          this.store.get(ConfigKey.PluginsExtraKnownMarketplaces) ??
-          DefaultConfig.plugins.extraKnownMarketplaces,
-        options: this.store.get(ConfigKey.PluginsOptions) ?? DefaultConfig.plugins.options,
-        suppressedBuiltins:
-          this.store.get(ConfigKey.PluginsSuppressedBuiltins) ??
-          DefaultConfig.plugins.suppressedBuiltins,
-      },
-      skills: {
-        enabled: this.store.get(ConfigKey.SkillsEnabled) ?? true,
-        includeInstructions: this.store.get(ConfigKey.SkillsIncludeInstructions) ?? true,
-        metadataBudget:
-          this.store.get(ConfigKey.SkillsMetadataBudget) ?? DefaultConfig.skills.metadataBudget,
-        roots: this.store.get(ConfigKey.SkillsRoots) ?? DefaultConfig.skills.roots,
-      },
-      skillOverrides: this.store.get(ConfigKey.SkillOverrides) ?? DefaultConfig.skillOverrides,
-      commandOverrides:
-        this.store.get(ConfigKey.CommandOverrides) ?? DefaultConfig.commandOverrides,
-      logging: {
-        level: this.store.get(ConfigKey.LogLevel) ?? "info",
-        format: this.store.get(ConfigKey.LogFormat) ?? DefaultConfig.logging.format,
-      },
-      toolConcurrency: {
-        maxConcurrency:
-          this.store.get(ConfigKey.ToolConcurrencyMax) ??
-          DefaultConfig.toolConcurrency.maxConcurrency,
-      },
-      modelAnomalyGuard:
-        this.store.get(ConfigKey.ModelAnomalyGuard) ?? DefaultConfig.modelAnomalyGuard,
-      hooks: this.store.get(ConfigKey.Hooks) ?? DefaultConfig.hooks,
-      ui: {
-        locale: this.store.get(ConfigKey.UiLocale) ?? DefaultConfig.ui.locale,
-        theme: this.store.get(ConfigKey.UiTheme) ?? DefaultConfig.ui.theme,
-      },
-    };
+    // 快照形状与缺省全部来自 resolve-snapshot.ts 的键清单：
+    // 原实现在这里逐字段写 `?? DefaultConfig.x`，并对 features.* / skills.enabled /
+    // logging.level 硬编码 `?? true` / `?? "info"`（MAIN-03 的第二条回落路径）。
+    return assembleConfigSnapshot(this.store.lookup(), DefaultConfig);
   }
 
   has(key: ConfigKey): boolean {
-    return this.store.has(key) || hasDefaultValue(key);
+    return this.store.has(key) || documentedDefaultOf(DefaultConfig, key) !== undefined;
   }
 
   set<K extends ConfigKey>(key: K, value: ConfigValue<K>): void {
@@ -366,91 +311,10 @@ export class ConfigPortImpl implements ConfigPort {
 // Helpers
 // ============================================================
 
-function getDefaultValue(key: ConfigKey): unknown {
-  const defaults = DefaultConfig;
-  switch (key) {
-    case ConfigKey.ModelStreamIdleTimeout:
-      return defaults.modelStream.idleTimeoutMs;
-    case ConfigKey.PermissionMode:
-      return defaults.permission.mode;
-    case ConfigKey.PermissionAllowedTools:
-      return defaults.permission.allowedTools;
-    case ConfigKey.PermissionDisallowedTools:
-      return defaults.permission.disallowedTools;
-    case ConfigKey.PermissionAutoApproveHighRisk:
-      return defaults.permission.autoApproveHighRisk;
-    case ConfigKey.PermissionAllowMediumRiskInAuto:
-      return defaults.permission.allowMediumRiskInAuto;
-    case ConfigKey.StorageDir:
-      return defaults.storage.dir;
-    case ConfigKey.StorageSessionDbPath:
-      return defaults.storage.sessionDbPath;
-    case ConfigKey.HttpProxy:
-      return defaults.network.httpProxy;
-    case ConfigKey.NoProxy:
-      return defaults.network.noProxy;
-    case ConfigKey.CaCertFile:
-      return defaults.network.caCertFile;
-    case ConfigKey.HttpTimeout:
-      return defaults.network.timeout;
-    case ConfigKey.FeatureCompact:
-      return defaults.features.compact;
-    case ConfigKey.FeatureRewind:
-      return defaults.features.rewind;
-    case ConfigKey.FeatureSubagent:
-      return defaults.features.subagent;
-    case ConfigKey.FeatureMemory:
-      return defaults.features.memory;
-    case ConfigKey.FeatureSkill:
-      return defaults.features.skill;
-    case ConfigKey.FeatureMcp:
-      return defaults.features.mcp;
-    case ConfigKey.MemoryUse:
-      return defaults.memory.use;
-    case ConfigKey.McpServers:
-      return defaults.mcp.servers;
-    case ConfigKey.PluginsEnabled:
-      return defaults.plugins.enabled;
-    case ConfigKey.PluginsDirs:
-      return defaults.plugins.dirs;
-    case ConfigKey.PluginsEnabledPlugins:
-      return defaults.plugins.enabledPlugins;
-    case ConfigKey.PluginsExtraKnownMarketplaces:
-      return defaults.plugins.extraKnownMarketplaces;
-    case ConfigKey.PluginsOptions:
-      return defaults.plugins.options;
-    case ConfigKey.PluginsSuppressedBuiltins:
-      return defaults.plugins.suppressedBuiltins;
-    case ConfigKey.SkillsEnabled:
-      return defaults.skills.enabled;
-    case ConfigKey.SkillsIncludeInstructions:
-      return defaults.skills.includeInstructions;
-    case ConfigKey.SkillsMetadataBudget:
-      return defaults.skills.metadataBudget;
-    case ConfigKey.SkillsRoots:
-      return defaults.skills.roots;
-    case ConfigKey.LogLevel:
-      return defaults.logging.level;
-    case ConfigKey.LogFormat:
-      return defaults.logging.format;
-    case ConfigKey.ToolConcurrencyMax:
-      return defaults.toolConcurrency.maxConcurrency;
-    case ConfigKey.ModelAnomalyGuard:
-      return defaults.modelAnomalyGuard;
-    case ConfigKey.Hooks:
-      return defaults.hooks;
-    case ConfigKey.UiLocale:
-      return defaults.ui.locale;
-    case ConfigKey.UiTheme:
-      return defaults.ui.theme;
-    default:
-      return undefined;
-  }
-}
-
-function hasDefaultValue(key: ConfigKey): boolean {
-  return getDefaultValue(key) !== undefined;
-}
+// 原本的 getDefaultValue()/hasDefaultValue() 是一张 40 路 switch 的 key→默认值表，
+// 与 getAll() 的逐字段回落、merge() 的两处 ?? DefaultConfig 是同一份映射写三遍
+// （违反根 AGENTS.md「避免重复状态和多条写入路径」）。现在统一由
+// resolve-snapshot.ts 的 CONFIG_SNAPSHOT_KEYS + resolveConfigValue() 单点持有。
 
 // ============================================================
 // Factory
@@ -480,7 +344,16 @@ export {
   type SuppressedBuiltinPatchResult,
   type UiLocalePatchResult,
 } from "./file-config.adapter.js";
-export { parseEnvConfig, getToolConcurrencyConfig } from "./env-config.adapter.js";
+// 补齐诊断入口的桶导出：只导出兼容名会让包外消费者拿不到 parseEnvConfigWithDiagnostics，
+// 无法观测「非法 env 被忽略」这条降级。
+export {
+  getToolConcurrencyConfig,
+  parseEnvConfig,
+  parseEnvConfigWithDiagnostics,
+  type EnvConfigDiagnostic,
+  type EnvConfigInvalidReason,
+  type ParsedEnvConfig,
+} from "./env-config.adapter.js";
 export { ZCodeConfigFileSchema, type ZCodeConfigFile } from "./schema.js";
 export { mergeConfigs, createPrioritizedConfig, getScopePriority } from "./config-merger.js";
 export {
