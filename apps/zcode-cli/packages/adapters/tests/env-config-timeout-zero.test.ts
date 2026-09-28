@@ -132,6 +132,64 @@ describe("D-B 有序判据：每一步一条 case（短路顺序即契约）", (
     assert.equal(d.path, "network.timeout");
     assert.equal(d.envKey, "ZCODE_TIMEOUT");
   });
+
+  // 用户裁决 2026-09-28（覆盖本轮先前记录的"后出现者写胜"）：主键 ZCODE_HTTP_TIMEOUT 优先于别名
+  // ZCODE_TIMEOUT，且两键都合法但取值不同时必须留一条 alias_conflict 诊断。
+  // 原规则下 ZCODE_TIMEOUT=0 能在用户写出 9000 之后静默把超时关掉，那是 §4.1 第 5 步守住的 D1 终态换了一道门。
+  it("别名优先级：主键赢，两个顺序都测，不一致必出诊断", () => {
+    const mainFirst = parseEnvConfigWithDiagnostics({
+      ZCODE_HTTP_TIMEOUT: "9000",
+      ZCODE_TIMEOUT: "5000",
+    });
+    assert.equal(mainFirst.config.network?.timeout, 9000, "主键在前 ⇒ 主键赢");
+    assert.equal(mainFirst.diagnostics.length, 1, "被作废的别名必须留痕");
+    assert.equal((mainFirst.diagnostics[0] as EnvConfigDiagnostic).reason, "alias_conflict");
+    assert.equal(mainFirst.diagnostics[0].envKey, "ZCODE_TIMEOUT", "诊断点名被作废的那条键");
+
+    const aliasFirst = parseEnvConfigWithDiagnostics({
+      ZCODE_TIMEOUT: "5000",
+      ZCODE_HTTP_TIMEOUT: "9000",
+    });
+    assert.equal(aliasFirst.config.network?.timeout, 9000, "别名在前 ⇒ 主键仍赢，不依赖插入顺序");
+    assert.equal((aliasFirst.diagnostics[0] as EnvConfigDiagnostic).reason, "alias_conflict");
+
+    const zeroAlias = parseEnvConfigWithDiagnostics({
+      ZCODE_HTTP_TIMEOUT: "9000",
+      ZCODE_TIMEOUT: "0",
+    });
+    assert.equal(zeroAlias.config.network?.timeout, 9000, "别名 0 不得顶掉显式超时");
+    assert.equal((zeroAlias.diagnostics[0] as EnvConfigDiagnostic).reason, "alias_conflict");
+
+    const sameValue = parseEnvConfigWithDiagnostics({
+      ZCODE_HTTP_TIMEOUT: "9000",
+      ZCODE_TIMEOUT: "9000",
+    });
+    assert.equal(sameValue.config.network?.timeout, 9000);
+    assert.deepEqual(sameValue.diagnostics, [], "两键同值不是冲突 ⇒ 零诊断");
+
+    const aliasOnly = parseEnvConfigWithDiagnostics({ ZCODE_TIMEOUT: "9000" });
+    assert.equal(aliasOnly.config.network?.timeout, 9000, "只给别名时仍然可用");
+    assert.deepEqual(aliasOnly.diagnostics, [], "无竞争 ⇒ 零诊断");
+  });
+
+  it("别名优先级 control：非法的后来者不覆盖先出现的合法值（缺席分支不写）", () => {
+    const bigLast = parseEnvConfigWithDiagnostics({
+      ZCODE_HTTP_TIMEOUT: "9000",
+      ZCODE_TIMEOUT: "2147483648",
+    });
+    assert.equal(bigLast.config.network?.timeout, 9000, "被拒的值走缺席分支，不得清空已写入的合法值");
+    const d = bigLast.diagnostics[0] as EnvConfigDiagnostic;
+    assert.equal(d.reason, "too_large");
+    assert.equal(d.envKey, "ZCODE_TIMEOUT");
+    assert.equal(bigLast.diagnostics.length, 1);
+
+    const emptyLast = parseEnvConfigWithDiagnostics({
+      ZCODE_HTTP_TIMEOUT: "9000",
+      ZCODE_TIMEOUT: "",
+    });
+    assert.equal(emptyLast.config.network?.timeout, 9000);
+    assert.equal(emptyLast.diagnostics[0]?.reason, "empty");
+  });
 });
 
 describe("顺序不可交换：D-B 记录的决定性陷阱", () => {

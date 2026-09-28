@@ -19,17 +19,21 @@
 关键结论：本层「忽略一个非法值」等价于「该 key 在 Env scope 缺席」，`getAll()` 会回落到
 `DefaultConfig`，因此**回落默认值不需要本层自己写第二份默认数字**。已核实：
 
-- `adapters/src/config/index.ts:113-114` — `if (config.network.timeout !== undefined) this.set(ConfigKey.HttpTimeout, ...)`
-- `adapters/src/config/index.ts:281` — `timeout: this.store.get(ConfigKey.HttpTimeout) ?? DefaultConfig.network.timeout`
-- `contracts/src/config/index.ts:305-307` — `network: { timeout: 180000 }`
-- `adapters/src/config/index.ts:182-184` / `:324-327` — `maxConcurrency` 同构，默认 `contracts/src/config/index.ts:342-344` 的 `10`
+- `adapters/src/config/index.ts:128-129` — `if (config.network.timeout !== undefined) this.set(ConfigKey.HttpTimeout, ...)`（原引 `:113-114`，已被后续拆分移位）
+- `adapters/src/config/index.ts:281` — `return assembleConfigSnapshot(this.store.lookup(), DefaultConfig);`，
+  回落表达式只剩一处：`adapters/src/config/resolve-snapshot.ts:109-115` 的 `resolveConfigValue`
+  （`stored === undefined ? 默认 : stored`）。**原引的 `?? DefaultConfig.network.timeout` 已在 gen4 收口时删除**（本文件 §12）
+- `contracts/src/config/index.ts:305-307` — `network: { timeout: 180000 }`（本轮复核为真）
+- `adapters/src/config/index.ts:198-199` — `maxConcurrency` 同构写入，默认 `contracts/src/config/index.ts:342-344` 的
+  `10`，回落同样走 `:281`（原引 `:182-184` / `:324-327` 已失效）
 
 因此「缺席」与「显式 0」不是等价的：缺席得到 180000（安全边界保留），显式 0 会让
 `http/index.ts:79` 的 `if (timeoutMs > 0)` 整块跳过，**请求超时被完全关闭**。
 
 ## 2. 缺陷（已复现）
 
-`normalizeNumber` 把不可解析的字符串转成 `0`，而 `0` 在下游被当作合法配置值一路透传：
+`normalizeNumber` 把不可解析的字符串转成 `0`，而 `0` 在下游被当作合法配置值一路透传
+（**本节 file:line 全部是改前地址**，M5 修复后已移位或删除，保留只为留痕）：
 
 ```
 ZCODE_HTTP_TIMEOUT=30s
@@ -51,18 +55,27 @@ ZCODE_HTTP_TIMEOUT=30s
 但 `http/index.ts:79 if (timeoutMs > 0)` 的行为早就是「0 ⇒ 不设计时器」。D-B 裁决（M5）把校验层
 与行为对齐，而不是反过来把行为改窄：
 
-- `config/schema.ts:30` — `network.timeout: nonNegativeFiniteNumberSchema.optional()`（**本轮改**：
-  `z.number().finite().nonnegative()`，文件层与 env 层对同一字段同语义；同一字段两套规则正是 D1 的根因形态）
-- `config/schema.ts:7` — `positiveNumberSchema` 保留原样，`toolConcurrency.maxConcurrency`（`:218`）、
+- `config/schema.ts:43` — `timeout: nonNegativeFiniteNumberSchema.max(MAX_TIMER_DELAY_MS).optional()`，`:19`
+  是文件侧具名常量（`2_147_483_647`，与 env 侧 `env-config.adapter.ts:33` 同名同值）。行号两次后移：fix-db 在
+  `:13` 插 5 行使 `:30`→`:35`，本轮加天花板再插 8 行使 `:35`→`:43`。
+- `config/schema.ts:7` — `positiveNumberSchema` 保留原样，`toolConcurrency.maxConcurrency`（`:231`）、
   `modelStream.idleTimeoutMs`、provider `timeout/timeoutMs`、`metadataBudget`、exec `timeoutMs` 等
-  **全部用户不变**，0 对它们没有合法语义。
-- `config/schema.ts:207-210` — `logging.format: z.enum(["text","json"])`。
+  **全部用户不变**，0 对它们没有合法语义，且**未被 `.max()` 顺手封顶**（MAIN-10：上界属于计时器消费方，
+  `maxConcurrency` 的合理上界是运营/产品数，本轮不替产品拍板；MCP `timeoutMs` 与 hook 超时是否要同一
+  天花板属未决项，本轮只在 `network.timeout` 上收口）。
+- `config/schema.ts:220-222` — `loggingSchema.format: z.enum(["text","json"])`（原引 `:207-210`）。
 
 本层采用**与文件层一致的非负有限数判据**，不再自行放宽：整数归整是消费方的事，
 本层不额外要求整数（`positiveNumberSchema` 也不是 int），否则又造出第二处分叉。
-唯一残留的不对称是 §4.1 第 6 步的 `MAX_TIMER_DELAY_MS`：它只在 env 侧拦，文件侧未加 `.max()`，
-因为该常量属于 `env-config.adapter.ts`，`schema.ts` 反向 import 它会把 env 层拖进文件层的依赖方向；
-要收口就得把常量搬进 `contracts`（本轮不做，记为后续项）。
+
+**§4.1 第 6 步的 `MAX_TIMER_DELAY_MS` 现在两条门共线**（gen5 收口 P1：此前只有 env 侧拦，文件侧放
+`1e20`/`2147483648` 过去，正是 MAIN-07 终态换了一扇门进来）。形态是**两侧各持一份同值具名常量**，由
+`adapters/tests/config-timeout-ceiling-drift.test.ts`（4 例）做**源码文本比对**漂移守卫：任一侧数值被单独改动即红
+（镜像副本证伪：文件侧 `+1` ⇒ `pass 3 fail 1`；还原数值但摘掉 `.max()` ⇒ `pass 2 fail 2`）。
+它**不保证**什么：这不是运行时共享常量，抓不到"同值被语义不同地应用"（比较符改 `>=`、`.max()` 换成自定义 refine、
+常量接到别的键上），那类仍靠 §4.1 行为用例与人工审查。没落成真共享的原因：`schema.ts` 有 `zod` 的 value import
+（本裁剪检出装不了），而这两个文件之间的相对 **value** 导入（NodeNext 的 `./x.js`）在 Node 24 type stripping 下
+不改写说明符，会把本来可测的一侧一起拖成不可装载。单点归属的正解仍是把常量落进 `contracts`，记为后续项。
 
 ## 4. 环境变量清单与逐 key 契约
 
@@ -79,6 +92,17 @@ ZCODE_HTTP_TIMEOUT=30s
 | `ZCODE_HTTP_TIMEOUT` / `ZCODE_TIMEOUT`  | `network.timeout`                     | **有限非负数**（毫秒），JS 数字字面量语法；`0` = 显式关闭请求超时 | 非 0 非法值 **忽略该 key + 诊断**，回落到 `DefaultConfig.network.timeout` = 180000；超过 `MAX_TIMER_DELAY_MS` 也忽略（见 §4.1 第 5 步） |
 | `ZCODE_MAX_TOOL_CONCURRENCY`            | `toolConcurrency.maxConcurrency`      | **有限正数**；**0 继续非法**                     | **忽略该 key + 诊断**，回落到 `DefaultConfig.toolConcurrency.maxConcurrency` = 10 |
 | `ZCODE_LOG_FORMAT`                      | `logging.format`                      | `"text"` \| `"json"`（大小写不敏感）        | 见 §5.3：非法字符串值语义保持现状（回落 `"text"`），但**必须产出诊断**；非字符串输入整体缺席 + 诊断（MAIN-08）  |
+
+**`ZCODE_HTTP_TIMEOUT` 与 `ZCODE_TIMEOUT` 同时在场时的优先级（gen5 用户裁决，覆盖本文件此前的 last-write-wins 记录）**：
+**主键赢**，与 `Object.entries` 插入顺序无关；两键都合法但取值不同时，被作废的一侧必须产出 1 条
+`reason = "alias_conflict"` 诊断（`envKey` 点名被作废的键），且诊断不改写生效值。实测读数：
+`{HTTP_TIMEOUT:"9000", TIMEOUT:"5000"}` → `9000` + 1 条 `alias_conflict`；`{TIMEOUT:"5000", HTTP_TIMEOUT:"9000"}` → `9000` + 1 条；
+`{HTTP_TIMEOUT:"9000", TIMEOUT:"0"}` → `9000` + 1 条（别名不得静默关闭超时，那正是 §4.1 第 5 步守住的 D1 终态）；
+两键同值或只给别名 ⇒ 0 诊断；一侧非法 ⇒ 该侧走缺席分支产出自己的诊断，**不**清空另一侧已写入的合法值
+（`{HTTP_TIMEOUT:"9000", TIMEOUT:"2147483648"}` → 仍 `9000` + 1 条 `too_large`）。
+理由：插入序对使用者是未定义量，而"被静默改成 0 = 不设超时"属安全边界消失，不能靠文档默认既存行为。
+钉住它的是 `env-config-timeout-zero.test.ts`「别名优先级」一（两方向 + 同值 + 仅别名 + 别名 0 共 5 组断言）。
+本裁决同时消除了 §8 场景 6a 的残留风险，不再有"登记为后续项"的悬空条目。
 
 ### 4.1 数值 key 的有序判据（顺序本身是契约，短路返回）
 
@@ -143,7 +167,7 @@ M2 后 `createConfig()` 已改用 5.1；本入口仍被 `resolveWorkspaceStorage
 
 ### 5.4 `getToolConcurrencyConfig(env = process.env)`
 
-遗留的直读入口，无调用方（仅 `config/index.ts:483` re-export）。
+遗留的直读入口，无调用方（仅 `config/index.ts:349-351` re-export；原引 `:483` 是拆分前的地址，文件现 364 行）。
 现在接受可注入的 `env`（默认 `process.env`，向后兼容），非法值回落到
 命名常量 `DEFAULT_MAX_TOOL_CONCURRENCY = 10`，不再产出 0。
 该入口**没有诊断通道**，因此本 spec 认定它是重复默认值的来源，应被 `ConfigPort`
@@ -191,6 +215,9 @@ M2 后 `createConfig()` 已改用 5.1；本入口仍被 `resolveWorkspaceStorage
    并产生一条 `reason = "empty"` 诊断。
 6. **WHEN** `parseEnvConfig({ ZCODE_TIMEOUT: "30s" })`（别名）
    **THEN** 与场景 1 同语义，诊断 `path` 仍为 `network.timeout`。
+6a. **WHEN** `ZCODE_HTTP_TIMEOUT` 与 `ZCODE_TIMEOUT` **同时在场**（两个方向都测）
+    **THEN** 主键写入 `network.timeout`；两值都合法且不同 ⇒ 1 条 `reason = "alias_conflict"` 诊断，
+    `envKey` 点名被作废的那条键；同值或只给别名 ⇒ 0 诊断；一侧非法 ⇒ 该侧自己的诊断且不覆盖另一侧合法值。
 7. **WHEN** 传入 `null`/未定义 env、或全是非 `ZCODE_` 前缀的变量
    **THEN** 返回 `{ config: {}, diagnostics: [] }` 且不抛异常。
 8. **WHEN** `getToolConcurrencyConfig({ ZCODE_MAX_TOOL_CONCURRENCY: "abc" })`
@@ -247,8 +274,11 @@ M2 后 `createConfig()` 已改用 5.1；本入口仍被 `resolveWorkspaceStorage
 场景 1/2/3/5 的「经 `ConfigPort.getAll()` 后得到有效默认值」这一跳**未被执行**：
 `config/index.ts` 与 `config-merger.ts` 有 `@zcode/contracts` 的 value import，
 裁剪环境会 `ERR_MODULE_NOT_FOUND`。测试改为断言该跳的可观察前提
-（`config.network === undefined`，即 `config/index.ts:113` 的 `!== undefined` 守卫不成立、
-不会写入 `ConfigKey.HttpTimeout`），并用静态核实 `:281` / `:324-327` 的 `?? DefaultConfig.*` 回落。
+（`config.network === undefined`，即 `config/index.ts:128` 的 `!== undefined` 守卫不成立、
+不会写入 `ConfigKey.HttpTimeout`），回落那一跳由 `config-resolve-snapshot.test.ts` 对唯一装配点
+（`resolve-snapshot.ts` 的 `resolveConfigValue` / `assembleConfigSnapshot`）断言 ——
+**原先写的"静态核实 `:281` / `:324-327` 的 `?? DefaultConfig.*` 回落"已失效**：那些 `??` 在 gen4 收口时被删除，
+与本文件 §12 的静态校验清单（禁止再出现 `?? DefaultConfig.`）直接矛盾。
 
 ## 12. key→默认值映射的唯一归属（gen4 收口，T-缝2 / MAIN-03）
 
@@ -266,7 +296,8 @@ M2 后 `createConfig()` 已改用 5.1；本入口仍被 `resolveWorkspaceStorage
 `CONFIG_SNAPSHOT_KEYS`（39 个键，等于 `getAll()` 的字段集）、键到默认值的路径
 （`defaultPathOf`，只有 `skill → skillOverrides`、`command → commandOverrides` 两个例外，
 因为 `ConfigKey` 是点号字符串常量而不是枚举）、以及唯一的回落表达式
-`resolveConfigValue`。`index.ts` 从 500 行（已违反 CLI AGENTS.md 的 ≤400 法律）降到 364 行，
+`resolveConfigValue`。`index.ts` 从 491 行（已违反 CLI AGENTS.md 的 ≤400 法律；`git show afb40aa^:…index.ts | wc -l`
+实测 491，draft-scan 记的 492 是含结尾换行的 blob 计数）降到 364 行，
 公开导出面 34 个名字不变。
 
 回落语义**没有**改变：`resolveConfigValue` 显式写成 `stored === undefined ? 默认 : stored`，
@@ -306,10 +337,15 @@ M2 后 `createConfig()` 已改用 5.1；本入口仍被 `resolveWorkspaceStorage
 `getAll()` 的回落保留 store 里的 `0` ⇒ `http/index.ts:79` 的 `timeoutMs > 0` 为假 ⇒ 计时器不挂。
 M5 之前这条终态不可达（env 被 `not_positive` 挡、文件被 `.positive()` 挡），现在 **env 与文件两条路都能
 合法写入 0**，这是 D-B 的选择而非漏项；代价见 §9.1。
-仍然生效的守卫：`0` 之外的一切非法形态（空串、`30s`、`NaN`、`Infinity`、负数）继续被拒并出诊断，
-`> MAX_TIMER_DELAY_MS` 的有限值新增被拒（MAIN-07，替代原来的 `TimeoutOverflowWarning` 钳成 1ms），
-非字符串输入不再抛 `TypeError`（MAIN-08）。`ConfigPortImpl.set()` 与 `merge()` 仍是无校验入口，
-本轮不新增兜底分支。
+仍然生效的守卫：`0` 之外的一切非法形态（空串、`30s`、`NaN`、`Infinity`、负数）继续被拒并出诊断；
+`> MAX_TIMER_DELAY_MS`（`2_147_483_647` = 2^31-1）的有限值现在 **env 与文件两条门都拒**（MAIN-07，
+两侧各持同值常量 + 文本比对守卫，形态与限制见 §3 —— 这句原先只对 env 侧成立）。拦在门口是本环境实测的终态：
+`setTimeout(fn, 1e20)` 与 `setTimeout(fn, 2147483648)` 都打 `TimeoutOverflowWarning: … does not fit into a
+32-bit signed integer. Timeout duration was set to 1.`，读数 `FIRED after 4ms (asked 1e20)` /
+`FIRED after 5ms (asked 2147483648)` ⇒ "配了个大超时"= 每个请求约 1ms 就 abort。
+**文件侧 `.max()` 的执行在本环境不可验证**：`schema.ts` value import `zod`（裁剪检出未装），`node --test`
+装载即失败 ⇒ 文件门只有源码文本断言（4 例）+ 人工审查支撑，状态记为 **WARN-unverifiable**，不得写成"已执行"。
+非字符串输入不再抛 `TypeError`（MAIN-08）。`ConfigPortImpl.set()` 与 `merge()` 仍是无校验入口，本轮不新增兜底分支。
 
 ### 12.3 `merge()` 为什么仍逐键写（刻意不收口）
 
@@ -356,7 +392,9 @@ M4 装配后 `plugins` 组内键的**顺序**变了（`enabled` 提前），因�
 ### 13.4 测试入口
 
 - `node --test apps/zcode-cli/packages/adapters/tests/env-config.test.ts`（21 例）
-- `node --test apps/zcode-cli/packages/adapters/tests/env-config-timeout-zero.test.ts`（30 例：§4.1 每步一条、
-  顺序不可交换、MAIN-07 上界与并发键不对称、MAIN-08 非字符串、MAIN-09 源码扫描漂移断言）
+- `node --test apps/zcode-cli/packages/adapters/tests/env-config-timeout-zero.test.ts`（32 例：§4.1 每步一条、
+  顺序不可交换、MAIN-07 上界与并发键不对称、MAIN-08 非字符串、MAIN-09 源码扫描漂移断言、§4 别名优先级两序）
+- `node --test apps/zcode-cli/packages/adapters/tests/config-timeout-ceiling-drift.test.ts`（4 例：§3 双门天花板
+  文本比对漂移守卫；WARN 性质 —— 它不执行 `schema.ts`，本检出装载不了）
 - 整仓：`node docs/evolution/verify.mjs`
 

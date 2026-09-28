@@ -11,6 +11,12 @@ const positiveIntegerSchema = z.number().int().positive();
 // 同一字段两套规则正是 D1 的根因形态。maxConcurrency 等其余字段继续用 positiveNumberSchema，
 // 它们的 0 没有合法语义（seatGate({limit:0}) 是挂死）。
 const nonNegativeFiniteNumberSchema = z.number().finite().nonnegative();
+// MAIN-07 天花板的**文件侧副本**：数值必须与 env-config.adapter.ts 的 MAX_TIMER_DELAY_MS 一致。
+// 为什么不 import 那个常量：这两个文件之间的相对 **value** 导入（NodeNext 写作 `./x.js`）会让
+// 被导入模块在本仓库的 `node --test`（Node 24 type stripping，不改写说明符）下不可装载，
+// 等于用共享常量换掉整条测试链。因此这里保留具名常量 + 文本比对守卫
+// （adapters/tests/config-timeout-ceiling-drift.test.ts），并只作用于 network.timeout。
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const modelStreamSchema = z.object({
   idleTimeoutMs: positiveNumberSchema.optional(),
 });
@@ -32,7 +38,9 @@ const networkSchema = z.object({
   httpProxy: z.string().min(1).optional(),
   noProxy: z.string().min(1).optional(),
   caCertFile: z.string().min(1).optional(),
-  timeout: nonNegativeFiniteNumberSchema.optional(),
+  // 文件门与 env 门共线（MAIN-07）：超过定时器 32-bit 有符号上限的有限值在此拒绝，
+  // 不再让 1e20 / 2147483648 穿到 http/index.ts:79-83 被 Node 钳成 1ms。
+  timeout: nonNegativeFiniteNumberSchema.max(MAX_TIMER_DELAY_MS).optional(),
 });
 
 const featuresSchema = z.object({
