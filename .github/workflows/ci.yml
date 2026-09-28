@@ -118,12 +118,16 @@ jobs:
         shell: bash
         run: |
           echo "=== PROBE 读数 ==="
-          grep -oE 'error TS[0-9]+' probe-typecheck.log | sort | uniq -c | sort -rn
+          { grep -oE 'error TS[0-9]+' probe-typecheck.log || true; } | sort | uniq -c | sort -rn
           echo "TOTAL_TS_ERRORS=$(grep -cE 'error TS[0-9]+' probe-typecheck.log || true)"
           echo "FILES_WITH_ERRORS=$(grep -oE '\([0-9]+,[0-9]+\): error TS' probe-typecheck.log | wc -l)"
           echo "涉及包=$(grep -oE '@[a-z/-]+:typecheck' probe-typecheck.log | sed 's/:typecheck//' | sort -u | tr '\n' ' ')"
           echo "--- adapters 包的行数 ---"
           grep -c '@zcode/adapters' probe-typecheck.log || true
+          echo "--- 落在 tests/ 的错误行数 ---"
+          grep -cE 'tests/[a-z-]+\.test\.ts\([0-9]+,[0-9]+\): error TS' probe-typecheck.log || true
+          echo "--- tests/ 错误原文（最多 20 条）---"
+          { grep -E 'tests/[a-z-]+\.test\.ts\([0-9]+,[0-9]+\): error TS' probe-typecheck.log || true; } | head -20
           echo "--- 前 40 条 error ---"
           grep -E 'error TS' probe-typecheck.log | head -40 || true
 
@@ -159,33 +163,8 @@ jobs:
           echo "--- 尾部 40 行（失败时给细节）---"
           tail -40 probe-test.log
 
-  probe-test-typecheck:
-    name: PROBE Test TypeCheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
-      - name: 把 tests/ 纳入 tsc 视野后有多少错误
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm --filter @zcode/adapters exec tsc -p tsconfig.probe-tests.json --pretty false > probe-test-tc.log 2>&1
-          echo "tsc 成功（0 错误才会到这里）"
-      - if: always()
-        name: 读数
-        shell: bash
-        run: |
-          echo "=== PROBE 读数 ==="
-          echo "TOTAL_TS_ERRORS=$(grep -cE 'error TS[0-9]+' probe-test-tc.log || true)"
-          echo "落在 tests/ 的=$(grep -cE '^tests/.*error TS' probe-test-tc.log || true)"
-          echo "落在 src/ 的=$(grep -cE '^src/.*error TS' probe-test-tc.log || true)"
-          grep -oE 'error TS[0-9]+' probe-test-tc.log | sort | uniq -c | sort -rn | head -12
-          echo "--- 前 30 条 ---"
-          grep -E 'error TS' probe-test-tc.log | head -30
+  # 原来的 PROBE Test TypeCheck 作业已删：它对独立 tsconfig 跑裸 `tsc`，
+  # 不会先构建工作区依赖，得到 328 个 error TS（158 个 TS2307 Cannot find module
+  # '@zcode/contracts'，100 个 TS2339 连锁），量的是"依赖没建"而不是类型债。
+  # 现在改成把 tests/ 纳入 @zcode/adapters 自己的 typecheck 脚本，
+  # 由上面的 PROBE CLI TypeCheck（pnpm --filter zcode-cli run typecheck → turbo 先建依赖）一并量。
