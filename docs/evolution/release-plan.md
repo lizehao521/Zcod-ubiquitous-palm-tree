@@ -50,11 +50,17 @@ body 里会分两段说清各自动机，不装作是一件事。
    `pnpm lint` / `pnpm typecheck` 在本环境无法执行，任何提交信息都不得声称它们通过。
    全量底座上由 CI 跑出的结论见下节；两条证据链分开记账，不互相冒名。
 
-## CI 实测结论（全量底座，PR#1 head `a82fc12`，run 36460317426）
+## CI 实测结论（全量底座，run 36460317426 = head `a82fc12`；run 36462166522 = 当前 head `f90a641`）
 
 搬运方式：`evolution/hermes-m1-m5-full` = 目标仓库 `main` 的全量树 + 本轮 10 个提交 cherry-pick 重放；
 与本仓库历史无共同祖先，用 `--allow-unrelated-histories -X ours` 合并，
 `README`/`LICENSE` 保留项目版本。本仓库的 `main` 与裁剪树不受影响。
+
+下表取自 `a82fc12` 那次（第一次由红转绿的 run）。其后的 `aebb49d`、`f90a641` 是纯文档提交，
+各自触发一次 CI：`aebb49d` 的 Build/Test 被下一次推送的并发组取消（GitHub cancel-in-progress，
+是这次推送的副作用而非缺陷），`f90a641` 五个作业再次全 success。
+每次推送都会让 head 前移并作废上一个 run，所以这张表读作"这些提交各自跑绿过"，
+不读作"PR 上最后一次运行"——最后一轮以 PR 页面当前的 check 列表为准。
 
 | 作业 | 结论 | 关键步骤 |
 | --- | --- | --- |
