@@ -1,8 +1,10 @@
 // ============================================================
 // Node logging adapter - JSONL file and optional stderr sink
+// 落盘走 AppendQueue：log() 只入队（纯内存），字节由单 writer 异步批量写
 // ============================================================
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdirSync, appendFileSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LogContext, LogEntry, Logger, LoggerFactory, LogRedactor } from "@zcode/contracts";
@@ -14,6 +16,11 @@ import {
   type LogRetentionScheduleOptions,
   type LogRetentionTimer,
 } from "./retention.js";
+import {
+  AppendQueue,
+  type AppendQueueIo,
+  type AppendQueueStats,
+} from "./append-queue.js";
 import {
   DefaultLogRedactor,
   formatConsoleLine,
@@ -38,7 +45,26 @@ export type {
   LogRetentionTimer,
 } from "./retention.js";
 export { DefaultLogRedactor } from "./serialize.js";
+export { AppendQueue } from "./append-queue.js";
+export type { AppendQueueIo, AppendQueueStats, AppendQueueTimer } from "./append-queue.js";
 export type { SerializableLogEntry, SerializedLogError } from "./serialize.js";
+
+// 落盘边界常量：一处可调，避免在业务路径散落字面量。
+const LOG_APPEND_MAX_RECORDS = 2_000;
+const LOG_APPEND_MAX_BYTES = 1_024 * 1_024;
+const LOG_APPEND_FLUSH_INTERVAL_MS = 200;
+const LOG_APPEND_BACKOFF_INITIAL_MS = 100;
+const LOG_APPEND_BACKOFF_MAX_MS = 2_000;
+const LOG_APPEND_MAX_CONSECUTIVE_FAILURES = 8;
+const LOG_APPEND_SELF_REPORT_INTERVAL_MS = 5_000;
+const LOG_FILE_PREFIX = "zcode-";
+const LOG_FILE_SUFFIX = ".jsonl";
+
+export interface NodeLogAppendQueueOptions {
+  maxRecords?: number;
+  maxBytes?: number;
+  flushIntervalMs?: number;
+}
 
 export interface NodeLoggerFactoryOptions {
   env?: NodeJS.ProcessEnv;
@@ -47,6 +73,8 @@ export interface NodeLoggerFactoryOptions {
   console?: boolean | { stream: NodeJS.WritableStream };
   includeErrorStack?: boolean;
   redactor?: LogRedactor;
+  /** 异步落盘队列的边界覆盖；默认见 LOG_APPEND_* 常量。 */
+  appendQueue?: NodeLogAppendQueueOptions;
 }
 
 export type NodeLogRetentionScheduleOptions = Pick<
@@ -56,6 +84,10 @@ export type NodeLogRetentionScheduleOptions = Pick<
 
 export interface NodeLoggerFactory extends LoggerFactory {
   getLogDir(): string;
+  /** 同步冲刷未落盘日志：关机与 fatal 路径必须用它，异步写在 process.exit 之后不再执行。 */
+  flushSync(): void;
+  /** 队列与丢弃计数：观测「日志到底丢了没有」。 */
+  getAppendQueueStats(): AppendQueueStats;
   scheduleLogRetentionCleanup(
     options?: NodeLogRetentionScheduleOptions,
   ): LogRetentionTimer | undefined;
@@ -69,6 +101,7 @@ export class NodeFileLogger implements Logger {
   private readonly consoleStream?: NodeJS.WritableStream;
   private readonly includeErrorStack: boolean;
   private readonly redactor: LogRedactor;
+  private readonly appendQueue: AppendQueue;
 
   constructor(options: {
     category: string;
@@ -78,6 +111,7 @@ export class NodeFileLogger implements Logger {
     consoleStream?: NodeJS.WritableStream;
     includeErrorStack?: boolean;
     redactor: LogRedactor;
+    appendQueue: AppendQueue;
   }) {
     this.category = options.category;
     this.defaultContext = options.defaultContext ?? {};
@@ -86,6 +120,7 @@ export class NodeFileLogger implements Logger {
     this.consoleStream = options.consoleStream;
     this.includeErrorStack = options.includeErrorStack ?? false;
     this.redactor = options.redactor;
+    this.appendQueue = options.appendQueue;
   }
 
   debug(message: string, context?: LogContext): void {
@@ -113,6 +148,8 @@ export class NodeFileLogger implements Logger {
       consoleStream: this.consoleStream,
       includeErrorStack: this.includeErrorStack,
       redactor: this.redactor,
+      // 同一个工厂共用一个队列 = 唯一写入者，child 不能另起一条落盘链路。
+      appendQueue: this.appendQueue,
     });
   }
 
@@ -123,14 +160,17 @@ export class NodeFileLogger implements Logger {
 
     const mergedContext = { ...this.defaultContext, ...context };
     const entry = this.createEntry(level, message, mergedContext, error);
+    // 脱敏必须在入队前完成：批量写只搬运已序列化好的整行，不允许绕过 redactor。
     const serialized = toSerializableEntry(entry, this.redactor);
     const line = JSON.stringify(serialized);
 
     try {
-      ensureLogDir(this.logDir);
-      const logPath = join(this.logDir, getLogFileName());
-      maybeThrowStorageFsFault({ operation: "appendFile", path: logPath });
-      appendFileSync(logPath, `${line}\n`, "utf8");
+      // 文件名按 entry 自身时间戳确定：跨午夜时迟到的 drain 也不会把旧日志写进新文件。
+      this.appendQueue.enqueue(getLogFileName(entry.timestamp), line, level >= LogLevel.Warn);
+      if (level === LogLevel.Error) {
+        // Error 级是「临终日志」，立即冲刷（仍是异步），把丢失窗口压到一个事件循环 tick。
+        this.appendQueue.kickNow();
+      }
     } catch {
       // Logging must never break the agent execution path.
     }
@@ -178,6 +218,7 @@ export function createNodeLoggerFactory(options: NodeLoggerFactoryOptions = {}):
         ? process.stderr
         : undefined;
   const redactor = options.redactor ?? new DefaultLogRedactor();
+  const appendQueue = createLogAppendQueue(logDir, consoleStream, redactor, options.appendQueue);
 
   const create = (category: string, defaultContext: LogContext = {}) =>
     new NodeFileLogger({
@@ -188,6 +229,7 @@ export function createNodeLoggerFactory(options: NodeLoggerFactoryOptions = {}):
       consoleStream,
       includeErrorStack: options.includeErrorStack,
       redactor,
+      appendQueue,
     });
 
   return {
@@ -202,6 +244,12 @@ export function createNodeLoggerFactory(options: NodeLoggerFactoryOptions = {}):
     },
     getLogDir(): string {
       return logDir;
+    },
+    flushSync(): void {
+      appendQueue.flushSync();
+    },
+    getAppendQueueStats(): AppendQueueStats {
+      return appendQueue.stats();
     },
     scheduleLogRetentionCleanup(scheduleOptions = {}): LogRetentionTimer | undefined {
       if (retentionCleanupScheduled) return undefined;
@@ -237,13 +285,114 @@ function isDevelopmentMode(env: NodeJS.ProcessEnv): boolean {
   return entrypoint.endsWith(".ts") && entrypoint.includes(`${join("packages", "cli", "src")}`);
 }
 
-function ensureLogDir(logDir: string): void {
-  if (!existsSync(logDir)) {
-    maybeThrowStorageFsFault({ operation: "mkdir", path: logDir });
-    mkdirSync(logDir, { recursive: true });
-  }
+function ensureLogDirSync(logDir: string): void {
+  maybeThrowStorageFsFault({ operation: "mkdir", path: logDir });
+  // recursive mkdir 对已存在目录是幂等的，不需要额外的 existsSync syscall。
+  mkdirSync(logDir, { recursive: true });
 }
 
-function getLogFileName(): string {
-  return `zcode-${formatLocalLogDate(new Date())}.jsonl`;
+function getLogFileName(date: Date): string {
+  return `${LOG_FILE_PREFIX}${formatLocalLogDate(date)}${LOG_FILE_SUFFIX}`;
 }
+
+function createLogAppendQueue(
+  logDir: string,
+  consoleStream: NodeJS.WritableStream | undefined,
+  redactor: LogRedactor,
+  overrides: NodeLogAppendQueueOptions | undefined,
+): AppendQueue {
+  // 目录只需建一次；写失败时复位，这样外部删掉日志目录后仍能自愈，而不是永久静默。
+  let dirReady = false;
+  const io: AppendQueueIo = {
+    async ensureDir(dir) {
+      if (dirReady) return;
+      maybeThrowStorageFsFault({ operation: "mkdir", path: dir });
+      await mkdir(dir, { recursive: true });
+      dirReady = true;
+    },
+    async appendBatch(dir, fileName, payload) {
+      const logPath = join(dir, fileName);
+      try {
+        maybeThrowStorageFsFault({ operation: "appendFile", path: logPath });
+        await appendFile(logPath, payload, "utf8");
+      } catch (error) {
+        // 追加失败可能正是目录被删导致的：复位后下一次 drain 会重新 mkdir，避免静默永久失效。
+        dirReady = false;
+        throw error;
+      }
+    },
+    ensureDirSync(dir) {
+      ensureLogDirSync(dir);
+    },
+    appendBatchSync(dir, fileName, payload) {
+      const logPath = join(dir, fileName);
+      maybeThrowStorageFsFault({ operation: "appendFile", path: logPath });
+      appendFileSync(logPath, payload, "utf8");
+    },
+    now: () => Date.now(),
+    schedule(callback, delayMs) {
+      const timer = setTimeout(callback, delayMs);
+      // 定时器必须 unref：否则「等下一次冲刷」会把已经空转的进程拖住不退出。
+      timer.unref?.();
+      return timer;
+    },
+    cancelSchedule(timer) {
+      clearTimeout(timer as unknown as ReturnType<typeof setTimeout>);
+    },
+    selfReport(summary) {
+      const text =
+        `[zcode:log] append queue degraded reason=${summary.reason ?? "unknown"} ` +
+        `dropped=${summary.droppedRecords} bytes=${summary.droppedBytes} ` +
+        `writeFailures=${summary.writeFailures} rejectedOversized=${summary.rejectedOversizedRecords}\n`;
+      if (consoleStream) {
+        // 上报只走 console，不回流队列，避免「上报失败 → 再入队 → 再失败」的递归放大。
+        consoleStream.write(text);
+        return;
+      }
+      // console 关闭时把同一条摘要作为一行日志入队；上报本身按 5s 窗口限速，量有界。
+      // 根因：这里原来手写 JSON 字面量，level 写成枚举数字、status 写成 "degraded"，
+      // 与 toSerializableEntry 产出的「level 为小写名、status 受 isLogStatus 白名单约束」
+      // 不是同一个 schema，同一文件里混两种行会让 debug/server 的解析器丢行。
+      // 修法：统一走同一个序列化入口，脱敏与字段形态一处定义。
+      const now = new Date();
+      queue.enqueue(
+        getLogFileName(now),
+        JSON.stringify(
+          toSerializableEntry(
+            {
+              timestamp: now,
+              level: LogLevel.Warn,
+              levelName: LogLevelName[LogLevel.Warn],
+              event: "log.append.queue.degraded",
+              module: "adapters.logging",
+              message: "Log append queue degraded",
+              context: { ...summary },
+            },
+            redactor,
+          ),
+        ),
+        true,
+      );
+    },
+  };
+
+  const queue = new AppendQueue({
+    dir: logDir,
+    io,
+    maxRecords: overrides?.maxRecords ?? LOG_APPEND_MAX_RECORDS,
+    maxBytes: overrides?.maxBytes ?? LOG_APPEND_MAX_BYTES,
+    flushIntervalMs: overrides?.flushIntervalMs ?? LOG_APPEND_FLUSH_INTERVAL_MS,
+    backoffInitialMs: LOG_APPEND_BACKOFF_INITIAL_MS,
+    backoffMaxMs: LOG_APPEND_BACKOFF_MAX_MS,
+    maxConsecutiveFailures: LOG_APPEND_MAX_CONSECUTIVE_FAILURES,
+    selfReportIntervalMs: LOG_APPEND_SELF_REPORT_INTERVAL_MS,
+  });
+
+  // 复用 Node 的 exit 事件而不是新造 shutdown 编排器：现有 CLI 生命周期最终以
+  // process.exit() 收尾，exit 回调是同步的，之后异步 IO 不再执行，只有这里能保证临终日志落盘。
+  process.once("exit", () => {
+    queue.flushSync();
+  });
+  return queue;
+}
+
