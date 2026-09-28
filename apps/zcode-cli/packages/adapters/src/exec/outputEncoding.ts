@@ -1,8 +1,17 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import iconv from "iconv-lite";
+import {
+  resolveWindowsOutputEncoding,
+  type WindowsCodePageProbe,
+  type WindowsCodePageProbeInput,
+} from "./windows-code-page.js";
 
 const WINDOWS_OUTPUT_ENCODING_OVERRIDE_ENV = "ZCODE_WINDOWS_OUTPUT_ENCODING";
+const WINDOWS_COMSPEC_ENV_KEY = "ComSpec";
+const WINDOWS_DEFAULT_COMSPEC = "cmd.exe";
+const WINDOWS_CHCP_ARGS = ["/d", "/s", "/c", "chcp"] as const;
+const WINDOWS_CHCP_TIMEOUT_MS = 1_000;
 const PYTHON_UTF8_ENV_PATCH = {
   PYTHONIOENCODING: "utf-8",
   PYTHONUTF8: "1",
@@ -201,23 +210,32 @@ export function createExecutionOutputStreamDecoder(legacyOutputEncoding: string 
   };
 }
 
-function readWindowsActiveCodePageEncoding(env: NodeJS.ProcessEnv): string | null {
-  const comSpec = getEnvValue(env, "ComSpec", "win32") ?? "cmd.exe";
-  try {
-    const output = execFileSync(comSpec, ["/d", "/s", "/c", "chcp"], {
-      encoding: "utf8",
-      env,
-      timeout: 1_000,
-      windowsHide: true,
-    });
-    const codePage = output.match(/(\d{3,5})/)?.[1];
-    if (!codePage) return null;
-    if (codePage === "65001") return "utf8";
-    const encoding = `cp${codePage}`;
-    return iconv.encodingExists(encoding) ? encoding : null;
-  } catch {
-    return null;
-  }
+/**
+ * 默认 `chcp` 执行器：异步 `execFile`。
+ * 根因：原实现是 `execFileSync`，每次 run 在事件循环上同步等一次子进程（本机中位 37 ms，
+ * 10 并发串行约 520 ms），期间同进程其他 run 的取消/关闭无人服务。
+ * 决策与回退顺序已抽到 `windows-code-page.ts`（零运行时依赖，可被 `node --test` 验证）。
+ */
+function runChcpCommand({ comSpec, env }: WindowsCodePageProbeInput): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      comSpec,
+      [...WINDOWS_CHCP_ARGS],
+      {
+        encoding: "utf8",
+        env,
+        timeout: WINDOWS_CHCP_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
 }
 
 function resolveWindowsLocaleLegacyEncoding(env: NodeJS.ProcessEnv): string {
@@ -245,24 +263,32 @@ function resolveWindowsLocaleLegacyEncoding(env: NodeJS.ProcessEnv): string {
   return "cp437";
 }
 
-export function resolveLegacyExecutionOutputEncoding(options: {
+/**
+ * 每次 run 解析一次 legacy 输出编码；**异步**，调用点 `node-execution-adapter-run.ts` 直接 await。
+ * 没有跨 run 缓存：`chcp` 读的是活动控制台代码页，用户中途 `chcp 65001` 就会变，
+ * env 指纹给不出任何失效条件（理由与实测成本见 `specs/windows-code-page/spec.md` §1/§3）。
+ */
+export async function resolveLegacyExecutionOutputEncoding(options: {
   platform: NodeJS.Platform;
   processEnv: NodeJS.ProcessEnv;
-}): string | null {
+  /** 注入 `chcp` 执行器；缺省为异步 execFile，测试用它证明「每次 run 都读」。 */
+  codePageProbe?: WindowsCodePageProbe;
+  /** 注入编码存在性判定；缺省为 iconv-lite。 */
+  encodingExists?: (encoding: string) => boolean;
+}): Promise<string | null> {
   if (options.platform !== "win32") {
     return null;
   }
-  const override = getEnvValue(
-    options.processEnv,
-    WINDOWS_OUTPUT_ENCODING_OVERRIDE_ENV,
-    "win32",
-  )?.trim();
-  if (override) {
-    return iconv.encodingExists(override) ? override : null;
-  }
-  const activeEncoding = readWindowsActiveCodePageEncoding(options.processEnv);
-  if (activeEncoding && activeEncoding !== "utf8") {
-    return activeEncoding;
-  }
-  return resolveWindowsLocaleLegacyEncoding(options.processEnv);
+  return resolveWindowsOutputEncoding({
+    env: options.processEnv,
+    comSpec: getEnvValue(options.processEnv, WINDOWS_COMSPEC_ENV_KEY, "win32") ?? WINDOWS_DEFAULT_COMSPEC,
+    overrideEncoding: getEnvValue(
+      options.processEnv,
+      WINDOWS_OUTPUT_ENCODING_OVERRIDE_ENV,
+      "win32",
+    ),
+    probe: options.codePageProbe ?? runChcpCommand,
+    encodingExists: options.encodingExists ?? ((encoding) => iconv.encodingExists(encoding)),
+    localeLegacyEncoding: () => resolveWindowsLocaleLegacyEncoding(options.processEnv),
+  });
 }
