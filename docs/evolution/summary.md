@@ -30,9 +30,9 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
 - **本轮自己新增、又在本轮内收掉的违规 1**：`adapters/tests/logging-append-queue.test.ts` 447 行
   → M5 拆为 345 + 347；用例名与主代理在拆分过程中抢拍的 28 名快照 `diff` 为空
   ⇒ 原 18 例全在，M7 是真新增的第 19 例（既有违规仍只记账不动）
-- 已落地提交 9 个（logging / exec / fs 例外 spec / .gitignore / config 合并包 /
-  审查后修复 / 判据工具与轮次记录 / 谱系闭合 / 本交付状态更正）
-- 已落地提交 5 个：logging / exec / fs 边界例外 spec / .gitignore / config 合并包
+- 提交按功能拆分（logging / exec / fs 边界例外 spec / .gitignore / config 合并包 /
+  审查后修复 / 判据工具与轮次记录 / 谱系闭合 / 交付状态更正）；
+  **提交数不写死**，现算：`git rev-list --count 69dfda4..HEAD`
 
 ## 二·五、M5 融合 DAG 的落地状态（六腿全落，含审查后修复）
 
@@ -60,7 +60,11 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
 
 ## 三·五、交付状态（闭合时实测）
 
-- 本地 8 个提交，52 文件变更，+7528/−243；工作树干净（`git status -uall` 0 条）。
+- 本地自基线 `69dfda4` 起的全部提交都在这个分支上，工作树干净（`git status -uall` 0 条）。
+  提交数与累计物量**不写死在这里**，请现算：
+  `git rev-list --count 69dfda4..HEAD` 与 `git diff --shortstat 69dfda4..HEAD`
+  （上一次实测 52 文件 / +7528 / −243；写死数字会被"补一条更正"这个动作本身作废，
+  本节前面已经因此错过一次，不再犯）
 - 已推送到 `https://github.com/lizehao521/Zcod-ubiquitous-palm-tree` 的**新分支**
   `evolution/hermes-m1-m5`，远端 ref 实测与本地 HEAD 同为 `61d7388`。
 - **该仓库的 `main` 未被改动**，仍是它自己的 `c821398 "Initial commit"`：
