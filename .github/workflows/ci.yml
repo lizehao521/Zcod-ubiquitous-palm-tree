@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: TypeCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      # 根 typecheck 是显式列举的 `tsc -b packages/*`，覆盖不到 apps/zcode-cli；
+      # CLI 侧的类型检查此前只写在 apps/zcode-cli/AGENTS.md「验证」里、没有作业执行它
+      # —— 本仓库那 7 处 TS2345 就是这么漏到 Build 才现形的。
+      # 用 --filter 而不是文档里的 --dir：AGENTS.md 写的 `pnpm --dir apps/zcode-cli typecheck`
+      # 在 CI 上实测失败（sh: 1: turbo: not found，TypeCheck 作业 exit 1），
+      # 同一脚本经 `pnpm --filter zcode-cli run typecheck` 调用实测通过
+      # （turbo 扇出 17 个包、27 个任务全成功、error TS 0、1m37s）。
+      - run: pnpm --filter zcode-cli run typecheck
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  architecture:
+    name: Architecture Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm architecture:check
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [typecheck, lint, architecture]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @zcode/desktop run test --if-present
+      # 上一行在本仓库是空操作：实测 32 个工作区包没有任何一个声明 test 脚本，
+      # 所以 --if-present 什么都不跑却报 success。这一行走 adapters 包里新声明的入口，
+      # 把本轮 8 个测试文件 / 105 例真的跑起来；保留 desktop 那行不动，等它自己有测试时自然生效。
+      - run: pnpm --filter @zcode/adapters run test
