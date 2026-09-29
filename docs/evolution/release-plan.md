@@ -172,13 +172,32 @@ cd <ZCode-build>
 git fetch origin main
 git merge-base main origin/main   # 应输出空（无共同祖先）
 
-# 2. 跨历史合并（路径 2）：把全量底座分支合进 main
-git merge --allow-unrelated-histories -X ours origin/evolution/hermes-m1-m5-full
-#   若本地无该远端 ref：先 git fetch origin evolution/hermes-m1-m5-full
-#   合并冲突（-X ours 偏本地）按 release-plan 跨历史节处置；README/LICENSE 保留项目版本
+# 2. 把本轮 main 的两个新提交（gen6 A 线 + C 线文档）重放到全量底座分支
+#    本地全量分支 evolution/hermes-m1-m5-full 目前停在 828e861（= main 的 e7dab5a，
+#    即 gen6 之前），需要把 099e09a / 030468e cherry-pick 过去并推远端：
+git checkout evolution/hermes-m1-m5-full
+git cherry-pick 099e09a 030468e
+#    冲突处置：两份提交都只动 docs/evolution + specs + adapters/tests，全量底座上这些
+#    文件与裁剪树一致（cherry-pick 重放时验证过），预期零冲突；README/LICENSE 不在这两提交里。
+git push origin evolution/hermes-m1-m5-full
+#    等该分支 CI 五作业全绿（远端证据，本地不冒充）
+git checkout main
 
-# 3. 推 main（非强推；是普通 push 新增一个跨历史合并提交）
+# 3. 跨历史合并（路径 2）：把全量底座分支合进 main
+git merge --allow-unrelated-histories -X ours origin/evolution/hermes-m1-m5-full
+#   合并冲突（-X ours 偏本地）按 release-plan 跨历史节处置；README/LICENSE 保留项目版本
+#   注意：main 的 099e09a/030468e 与全量分支 cherry-pick 进来的同内容提交构成
+#   "同一改动两条历史"，-X ours 会保留 main 侧文本；合并后 tree 等价，无行为差异
+
+# 4. 推 main（非强推；是普通 push 新增一个跨历史合并提交）
 git push origin main
+
+# 5. 等 CI 五作业（Lint/TypeCheck/Architecture/Build/Test）跑完
+#    每次推送 head 前移作废旧 run，看 PR 页面当前 check 列表为准
+#    预期全 success（依据 head 84cdc26 的实测读数；CI 绿是远端证据，本地不冒充）
+
+# 6. 清理本地探针工作树（.hermess-snapshots 下 wt-teeth/wt-full/wt-probe/blobs）
+#    先确认无未提交有价值内容，再 rm -rf；blobs 是 git-snapshot 后镜像，可重建
 
 # 4. 等 CI 五作业（Lint/TypeCheck/Architecture/Build/Test）跑完
 #    每次推送 head 前移作废旧 run，看 PR 页面当前 check 列表为准
