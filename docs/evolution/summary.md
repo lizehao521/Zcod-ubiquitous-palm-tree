@@ -110,3 +110,30 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
   且 `maxConcurrency` 的 0 继续非法。代价已实测：4 个消费点里含 `bootstrap/src/auth-login.ts:386`，
   即登录请求也会一起失去超时。
 - 既有超行数文件只记账不修：`file-config.adapter.ts` 624、`schema.ts` 575、`config-factory.ts` 491。
+
+## 八、gen6 补记（A 线还债：M5 三处欠账的闭合状态）
+
+gen6 不新开战线，只闭合 `tree.txt` 自记的 gen5 三处带引号边界（节点 `gen6-a`，父 `gen5-c`）：
+
+1. **A1 · zod 欠账已闭**：`adapters/node_modules/zod`（4.6.5）从本机 pnpm store v10 离线重建（ESM `index.js` 闭包
+   95 文件 + CJS `index.cjs` 闭包 95 文件；workspace 全量 install 因 `@zcode/model-option-map` 缺失不可行，
+   故不走 lockfile，全量底座 `pnpm install` 会覆盖此目录——它只服务本裁剪树的可执行验证面）。
+   `schema.ts` 首次可被 `node --test` 装载，文件门 `.max(2_147_483_647)` 从「文本漂移守卫 + 静态审查」升级为
+   **执行断言 + 自包含变异复现**（`config-schema-timeout-exec.test.ts`，10 例全绿：`2^31-1` 过 / `2^31` 拒 /
+   `0` 过 / 负数拒 / `∞`·`NaN` 拒；变异 M1 常量 +1 ⇒ 上界漏拦 2^31、M2 摘 `.max()` ⇒ 1e20 放行，
+   各 1 条可观察失败证明断言不是空转）。`schema.ts` 的 zod 阻碍自 gen6 起解除；CJS 条件入口未被执行测试
+   覆盖（记为未验证边界）。
+2. **A2 · set()/merge() 未校验入口——证据收窄，取舍不变**：只读红队探针（grep 全 `packages/**` + 逐条人工复核
+   11 个 `*.set` 命中）实测**包外 0 个 `ConfigPort.set()` / `.merge()` 调用点**，唯一写入路径是
+   `config-factory.ts:260` 的 `createConfigPort(merged)` 构造注入。M5 的裁剪裁决（不加守卫）**维持**，
+   但台账从「0/超大值可以从那里进」收窄为「仅未来跨包直接调用可绕过，本树内无此调用方」，判词与残留射程
+   见 `specs/runtime-env-config/spec.md` §12.2a。
+3. **A3 · timeout=0 端到端——主代理直驱读数替换为真进程实测**：`http-timeout-zero-e2e.test.ts`（4 例全绿）
+   用真挂起的 `127.0.0.1:0` 回环服务器 + 3s 观察窗计时，实测 `timeoutMs=0` ⇒ 请求挂满观察窗不被超时 abort
+   （读数 3064ms）；对照组 `timeoutMs=500` ⇒ 519ms abort；`setTimeout(fn, 1e20)` ⇒ Node 实打
+   `TimeoutOverflowWarning` 钳成 1ms 触发（MAIN-07 症状当下仍成立的活体证据）。inline 分支副本与
+   `http/index.ts:79-84` 的 6 锚点文本等价断言兜住漂移。
+
+读数（`node docs/evolution/verify.mjs`，gen6 收尾实测）：`files=10 PASS=10 FAIL=0 WARN=0 cases=119/119 notRun=0 fit=100`；
+谱系 `nodes=12 frontier=[gen4-a, gen3-audit, gen5-b, gen6-a] stale=0`。C 线（收口发布）在本轮只做本地准备，
+远端动作留用户在有网环境执行（判据与命令序列见 `release-plan.md` 的「gen6 C 线」节）。

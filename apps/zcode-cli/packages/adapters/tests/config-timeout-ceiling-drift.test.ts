@@ -10,9 +10,11 @@
 // 它抓得到的是"两侧数值分叉"（改一处忘另一处 ⇒ 红）。
 // 它抓不到的是"同一数值被语义不同地应用"（例如把 `.max()` 换成自定义 refine、
 // 把比较改成 `>=`、或把常量接到别的键上）—— 那些只能靠 §4.1 的行为用例和人来判。
-// 之所以不做真正的运行时共享：schema.ts 有 `zod` 的 value import（本裁剪环境未安装，
-// 文件根本装载不了），而两个 adapter 文件之间的相对 value import（NodeNext 的 `./x.js`）
-// 在 Node 24 type stripping 下不会改写说明符，会把可测的那个文件一起拖死。
+// 之所以不做真正的运行时共享：两个 adapter 文件之间的相对 value import（NodeNext 的
+// `./x.js`）在 Node 24 type stripping 下不会改写说明符，会把可测的那个文件一起拖死。
+// （gen6 更正：schema.ts 的 zod value import 阻碍已解除——adapters/node_modules/zod
+// 已从本机 pnpm store 离线重建，schema.ts 可被 node --test 直接装载；文件门 .max() 的
+// 执行断言与自包含变异复现见同目录 config-schema-timeout-exec.test.ts。）
 // 代价写在这里，别把它读成"一处修改两边生效"。
 
 import { describe, it } from "node:test";
