@@ -135,3 +135,82 @@ C1–C8 全部落完，无待落项。全量底座那一侧另有 `61c3ede`（�
   因此清扫要覆盖整树：`git status --untracked-files=all` 逐条看，而不是只看仓库根。
   已实测（23:39）当前未跟踪共 **35** 条，全部是本轮 intended 产物，无残留。
   不打算为此加宽 ignore：加一条全局 `**/.hermess-*` 会把将来真正要入库的同名产物一起吞掉。
+
+
+## gen6 C 线：收口发布的本地准备（2026-09-28）
+
+gen6 不新开战线。C 线在本轮只做**本地可完成**的部分；远端动作（推 GitHub / 合 main / 等 CI 绿）
+需要网络，由用户在有网环境执行。本节是可复制的命令序列，不是已执行记录。
+
+### 本地已备
+
+- 谱系节点 `gen6-a` 已追加（`tree.mjs add`，不手改 `tree.txt`），`render` 后
+  `nodes=12 frontier=[gen4-a, gen3-audit, gen5-b, gen6-a] stale=0`。
+- `verify.mjs` 全量三态表：`files=10 PASS=10 FAIL=0 WARN=0 cases=119/119 notRun=0 fit=100`。
+- 本地工作树干净（`git status --porcelain` 只剩 3 个与进化无关的本地文件：
+  `ci_fail_screenshot.png`、`linux-job-web.html`、`remote-release.yml`，均为探针遗留，不入提交）。
+
+### 跨历史合并路径（用户裁决点）
+
+两条路（「跨历史」原文）：
+
+1. **强推覆盖 main**（`git push --force origin main`）——丢目标仓 main 的既有历史
+   （`c821398 Initial commit`），不可逆。
+2. **跨历史合并**（`git merge --allow-unrelated-histories -X ours <full-base-branch>`）——
+   保留 main 的 `c821398` 作为第二父，造一个跨历史合并提交，可 revert。
+
+**gen6 推荐 2（跨历史合并）**：可回滚、语义已在 `evolution/hermes-m1-m5-full` 验证过、
+不丢目标仓既有历史。强推仅当用户明确要「抹掉 main 历史」时才选。
+
+### 命令序列（用户在有网环境执行）
+
+```bash
+# 前置：本地 main 已含本轮全部提交（含 099e09a gen6）
+cd <ZCode-build>
+
+# 1. 确认本地 main 与远端 main 的关系（无共同祖先是预期的）
+git fetch origin main
+git merge-base main origin/main   # 应输出空（无共同祖先）
+
+# 2. 把本轮 main 的两个新提交（gen6 A 线 + C 线文档）重放到全量底座分支
+#    本地全量分支 evolution/hermes-m1-m5-full 目前停在 828e861（= main 的 e7dab5a，
+#    即 gen6 之前），需要把 099e09a / 030468e cherry-pick 过去并推远端：
+git checkout evolution/hermes-m1-m5-full
+git cherry-pick 099e09a 030468e
+#    冲突处置：两份提交都只动 docs/evolution + specs + adapters/tests，全量底座上这些
+#    文件与裁剪树一致（cherry-pick 重放时验证过），预期零冲突；README/LICENSE 不在这两提交里。
+git push origin evolution/hermes-m1-m5-full
+#    等该分支 CI 五作业全绿（远端证据，本地不冒充）
+git checkout main
+
+# 3. 跨历史合并（路径 2）：把全量底座分支合进 main
+git merge --allow-unrelated-histories -X ours origin/evolution/hermes-m1-m5-full
+#   合并冲突（-X ours 偏本地）按 release-plan 跨历史节处置；README/LICENSE 保留项目版本
+#   注意：main 的 099e09a/030468e 与全量分支 cherry-pick 进来的同内容提交构成
+#   "同一改动两条历史"，-X ours 会保留 main 侧文本；合并后 tree 等价，无行为差异
+
+# 4. 推 main（非强推；是普通 push 新增一个跨历史合并提交）
+git push origin main
+
+# 5. 等 CI 五作业（Lint/TypeCheck/Architecture/Build/Test）跑完
+#    每次推送 head 前移作废旧 run，看 PR 页面当前 check 列表为准
+#    预期全 success（依据 head 84cdc26 的实测读数；CI 绿是远端证据，本地不冒充）
+
+# 6. 清理本地探针工作树（.hermess-snapshots 下 wt-teeth/wt-full/wt-probe/blobs）
+#    先确认无未提交有价值内容，再 rm -rf；blobs 是 git-snapshot 后镜像，可重建
+
+# 4. 等 CI 五作业（Lint/TypeCheck/Architecture/Build/Test）跑完
+#    每次推送 head 前移作废旧 run，看 PR 页面当前 check 列表为准
+#    预期全 success（依据 head 84cdc26 的实测读数；CI 绿是远端证据，本地不冒充）
+
+# 5. 清理本地探针工作树（.hermess-snapshots 下 wt-teeth/wt-full/wt-probe/blobs）
+#    先确认无未提交有价值内容，再 rm -rf；blobs 是 git-snapshot 后镜像，可重建
+```
+
+### 边界声明（不注水）
+
+- 本地**没有**执行过 `git merge` / `git push` / CI——本轮无网络。
+- 上述命令序列是「待用户执行」，不是「已执行」；CI 绿是远端证据，缺证据不写成通过。
+- `adapters/node_modules/zod` 不在 lockfile 内；全量底座 `pnpm install` 会以官方 node_modules 覆盖此目录，
+  因此 C 线合 main 后 CI 的 Test 作业走的是全量 `pnpm install` 的 zod，不是本裁剪树手搓的这份——
+  两条证据链分开记账。

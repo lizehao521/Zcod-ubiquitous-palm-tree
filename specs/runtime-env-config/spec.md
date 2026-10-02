@@ -73,9 +73,19 @@ ZCODE_HTTP_TIMEOUT=30s
 `adapters/tests/config-timeout-ceiling-drift.test.ts`（4 例）做**源码文本比对**漂移守卫：任一侧数值被单独改动即红
 （镜像副本证伪：文件侧 `+1` ⇒ `pass 3 fail 1`；还原数值但摘掉 `.max()` ⇒ `pass 2 fail 2`）。
 它**不保证**什么：这不是运行时共享常量，抓不到"同值被语义不同地应用"（比较符改 `>=`、`.max()` 换成自定义 refine、
-常量接到别的键上），那类仍靠 §4.1 行为用例与人工审查。没落成真共享的原因：`schema.ts` 有 `zod` 的 value import
-（本裁剪检出装不了），而这两个文件之间的相对 **value** 导入（NodeNext 的 `./x.js`）在 Node 24 type stripping 下
-不改写说明符，会把本来可测的一侧一起拖成不可装载。单点归属的正解仍是把常量落进 `contracts`，记为后续项。
+常量接到别的键上），那类仍靠 §4.1 行为用例与人工审查。没落成真共享的原因：这两个文件之间的相对 **value** 导入
+（NodeNext 的 `./x.js`）在 Node 24 type stripping 下不改写说明符，会把本来可测的一侧一起拖成不可装载。
+单点归属的正解仍是把常量落进 `contracts`，记为后续项。
+
+**gen6 更正（A1 台架）**：「`schema.ts` 有 `zod` 的 value import（本裁剪检出装不了）」这条阻碍**已解除**——
+`adapters/node_modules/zod`（4.6.5，从本机 pnpm store 离线重建，ESM 走 `index.js`、CJS 走 `index.cjs`，
+双条件均实测可加载）已就位，`schema.ts` 现在可被 `node --test` 直接装载。原先只能文本断言的文件门
+`.max(MAX_TIMER_DELAY_MS)` 在 `adapters/tests/config-schema-timeout-exec.test.ts`（执行断言 + 自包含变异复现）
+中**被执行**：`network.timeout = 2^31` 被拒、`2^31-1` 与 `0` 通过、负数被拒；并复现两个变异
+（常量 `+1` ⇒ 上界漏拦；摘 `.max()` ⇒ 超大值放行）各产生 1 条可观察失败，证明断言不是空转。
+CJS 条件入口的完整闭包已一并重建（95 文件）；zod 是**本地离线重建**而非 `pnpm install`（workspace 因
+`@zcode/model-option-map` 缺失无法全量安装），所以 `adapters/node_modules/zod` 不进 lockfile，
+全量底座上 `pnpm install` 会以自己的 node_modules 覆盖此目录——本目录只服务本裁剪树的可执行验证面。
 
 ## 4. 环境变量清单与逐 key 契约
 
@@ -343,9 +353,40 @@ M5 之前这条终态不可达（env 被 `not_positive` 挡、文件被 `.positi
 `setTimeout(fn, 1e20)` 与 `setTimeout(fn, 2147483648)` 都打 `TimeoutOverflowWarning: … does not fit into a
 32-bit signed integer. Timeout duration was set to 1.`，读数 `FIRED after 4ms (asked 1e20)` /
 `FIRED after 5ms (asked 2147483648)` ⇒ "配了个大超时"= 每个请求约 1ms 就 abort。
-**文件侧 `.max()` 的执行在本环境不可验证**：`schema.ts` value import `zod`（裁剪检出未装），`node --test`
-装载即失败 ⇒ 文件门只有源码文本断言（4 例）+ 人工审查支撑，状态记为 **WARN-unverifiable**，不得写成"已执行"。
+**文件侧 `.max()` 的执行现已可验证（gen6 A1 台架闭合）**：`adapters/node_modules/zod`（4.6.5）已从本机
+pnpm store 离线重建，`schema.ts` 可被 `node --test` 直接装载；文件门 `.max(MAX_TIMER_DELAY_MS)` 的
+执行断言 + 自包含变异复现（M1 常量 +1、M2 摘 `.max()`，各 1 条可观察失败）见
+`adapters/tests/config-schema-timeout-exec.test.ts`（10 例全绿，§13.4）。原 WARN-unverifiable 状态
+自 gen6 起改为 **已执行**；CJS 条件入口未被该测试覆盖（记为未验证边界，见 §13.4）。
 非字符串输入不再抛 `TypeError`（MAIN-08）。`ConfigPortImpl.set()` 与 `merge()` 仍是无校验入口，本轮不新增兜底分支。
+
+### 12.2a `set()`/`merge()` 未校验入口的 gen6 红队探针（A2，只读）
+
+**探针方法**：grep `apps/zcode-cli/packages/**` 全部 `.ts`，找 `ConfigPort.set(` / `ConfigPort.merge(` 的**包外**调用点；再对 11 个候选 `*.set(...)` 命中逐条人工复核（`configPublishers.set` / `modelConfigMutationTails.set` /
+`joinInByPort.set` / `providerTransports.set` / `mcp records.set` / `configuredServers.set` 等，全部是 `Map.set` 不是
+`ConfigPort.set`）。**结论：包外 0 个 `ConfigPort.set()` / `.merge()` 调用点。**
+
+唯一的 ConfigPort 消费入口是 `config-factory.ts:260` 的 `createConfigPort(merged)`（构造时一次性喂入已经过
+`mergeConfigs` 合并 + 各 scope 校验的值），之后不再从外部 `set`/`merge`。
+
+**判定（gen6 A2 落定）**：M5 裁决「`set()/merge()` 仍是未校验入口，本轮按裁剪决议不加守卫」的风险敞口
+**实测比台账记载的窄**——
+1. **包外无调用点**：`ConfigPort` 的 `set(key, value)` / `merge(config, scope)` 在本裁剪树内**没有任何跨包消费者**，
+   唯一写入路径是 `createConfigPort(merged)` 构造注入 + 进程内 `bootstrap` 链（`config-factory.ts`）。
+   `0`/超大值要进 store，必须经过 `createConfigPort` 的 `initial` 参数（System scope），而该参数由
+   `config-factory.ts` 的 `mergeConfigs` 输出喂入——`mergeConfigs` 自身走的是各 scope 已校验的 RuntimeConfigPatch，
+   即**文件层已经过 `ZCodeConfigFileSchema`（A1 现已可执行）**、env 层已经过 `parseEnvConfigWithDiagnostics`。
+2. **残留射程（不注水声明）**：`ConfigPortImpl.set(key, value, ConfigScope.Session)`（`index.ts:288-291`）是
+   **公开 API**，类型只靠 TS 的 `ConfigValue<K>` 兜着。若未来某消费方（桌面端 / Web 远控 / MCP 工具）直接调
+   `configPort.set(ConfigKey.HttpTimeout, 1e20)` 而绕开 `createConfigPort`，则 store 里的值会**绕过 A1 的文件门**
+   直达 `http/index.ts:79`。本探针**没有**找到这样的调用方，但「没有」≠「契约保证没有」——这是已知未设防边界，
+   记为 UNVERIFIED（无调用方证据，非「已验证安全」）。若要闭合，正解是把 `set`/`merge` 的写入也过一遍
+   对应的 schema 字段子集（`network.timeout` 过 `nonNegativeFiniteNumberSchema.max(MAX_TIMER_DELAY_MS)`），
+   或至少加一个**运行时断言**（开发期 throw，生产期 warn）——本轮**不**做，与 M5 裁剪决议保持一致，
+   只把「包外 0 调用点」这条实测证据写进台账，让后续决策有依据。
+3. **与 M5 决议的关系**：M5 说「`set()/merge()` 仍是未校验入口，0/超大值可以从那里进」。本探针把这句话
+   的**可观察面**收窄为「仅进程内 `createConfigPort` 构造注入 + 未来潜在 `ConfigPort.set` 直接调用」，
+   不改变 M5 的取舍（不新增守卫），只补证据。
 
 ### 12.3 `merge()` 为什么仍逐键写（刻意不收口）
 
@@ -394,6 +435,11 @@ M4 装配后 `plugins` 组内键的**顺序**变了（`enabled` 提前），因�
 - `node --test apps/zcode-cli/packages/adapters/tests/env-config.test.ts`（21 例）
 - `node --test apps/zcode-cli/packages/adapters/tests/env-config-timeout-zero.test.ts`（32 例：§4.1 每步一条、
   顺序不可交换、MAIN-07 上界与并发键不对称、MAIN-08 非字符串、MAIN-09 源码扫描漂移断言、§4 别名优先级两序）
+- `node --test apps/zcode-cli/packages/adapters/tests/config-schema-timeout-exec.test.ts`（10 例：gen6 A1，
+  文件门 .max() 执行断言 + 自包含变异 M1/M2 复现。CJS 条件入口未覆盖，记为未验证边界）
+- `node --test apps/zcode-cli/packages/adapters/tests/http-timeout-zero-e2e.test.ts`（4 例：gen6 A3，
+  timeout=0 端到端真进程实测——真挂起 127.0.0.1 服务器 + 观察窗计时，替代 gen5 的主代理直驱读数；
+  1e20 钳位对照组实打 TimeoutOverflowWarning）
 - `node --test apps/zcode-cli/packages/adapters/tests/config-timeout-ceiling-drift.test.ts`（4 例：§3 双门天花板
   文本比对漂移守卫；WARN 性质 —— 它不执行 `schema.ts`，本检出装载不了）
 - 整仓：`node docs/evolution/verify.mjs`

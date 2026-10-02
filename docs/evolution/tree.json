@@ -190,6 +190,22 @@
       ],
       "note": "尺子抓到真东西：改优先级后 fixer 原「后出现者写胜」用例立刻红（104/105），改判据必须同步改测试而不是改测试迁就实现；两方向实测 9000 + 1 条 alias_conflict",
       "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
+    },
+    {
+      "id": "gen6-a",
+      "label": "gen6 A-line debt closure: A1 zod offline rebuild + file gate .max() exec assertions (10 cases, M1/M2 mutation repro); A2 red-team probe: 0 external ConfigPort.set/merge callers (recorded as UNVERIFIED boundary); A3 timeout=0 real-process E2E (4 cases, silent 127.0.0.1 server + observe window; 1e20 clamp witness live TimeoutOverflowWarning)",
+      "fit": 100,
+      "cases": "14/14",
+      "branch": "frontier-grow",
+      "parent": "gen5-c",
+      "unverified": [
+        "CJS condition entry of zod not covered by exec test",
+        "ConfigPort.set()/merge() have no external callers in this tree but the API remains unguarded (M5 trim decision, now evidence-backed)",
+        "A3 E2E uses inlined copy of http/index.ts:79-84 branch, not the real NodeHttpClientAdapter (value-imports proxy-agent/@zcode/contracts which cannot load in this trimmed tree)",
+        "1e20 clamp reading is relative to 3s observe window, not infinity"
+      ],
+      "note": "zod 4.6.5 rebuilt from local pnpm store v10 (ESM index.js + CJS index.cjs closures, 840->381 files); NOT in lockfile (workspace install blocked by missing @zcode/model-option-map), full-base pnpm install overwrites this dir",
+      "fit_definition": "fit=(pass-2*fail)/total*100，仅计本机 node --test 真实执行用例；未验证边界单列不计入 fit"
     }
   ],
   "edges": [
@@ -232,13 +248,17 @@
     {
       "from": "gen5-a",
       "to": "gen5-c"
+    },
+    {
+      "from": "gen5-c",
+      "to": "gen6-a"
     }
   ],
   "frontier": [
     "gen4-a",
     "gen3-audit",
     "gen5-b",
-    "gen5-c"
+    "gen6-a"
   ],
   "stale_count": 0,
   "fit_definition": "fit = round(pass / (pass + fail) * 100)，仅统计本机实际执行的 node:test 用例；unverified 记录未被可执行证据覆盖的边界数，fit 不许掩盖它",
