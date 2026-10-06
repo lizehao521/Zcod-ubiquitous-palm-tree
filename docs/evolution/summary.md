@@ -100,7 +100,13 @@ M4 结束时 `nodes=7 frontier=[gen2-b, gen4-a, gen4-b]`。
   (b) **相对值导入写成 `./x.js`**（本仓 NodeNext 约定）——类型擦除不改写说明符，盘上只有 `.ts`，
   所以必定 `ERR_MODULE_NOT_FOUND`（见 `main-findings.md` MAIN-11，含一处被推翻的旧结论：`iconv-lite` 其实装着）。
   相关缝以"未验证边界"记，不折算成绿灯；也不要为了跑通把 `.js` 改成 `.ts`，那会破坏真实构建。
-- GitHub Actions：`ci.yml` 指向缺失目录，push 后必然出现结构性红灯，与本次改动无关。
+- GitHub Actions：~~`ci.yml` 指向缺失目录，push 后必然出现结构性红灯，与本次改动无关。~~
+  **该预测已被实测推翻**：红灯的成因是缺 CI 要构建的那棵树，不是缺 workflow。
+  把本轮提交 cherry-pick 到目标仓库 `main` 的全量树后，五个作业（Lint/TypeCheck/Architecture/Build/Test）
+  在 head `1429983` 上全 success；后续把 CLI 的 typecheck 与测试入口接进作业，读数见
+  `release-plan.md` 的「CI 实测结论」一节。
+  仍然成立的一半：本裁剪检出自己跑不了 `pnpm lint`/`pnpm typecheck`/`architecture:check`，
+  所以 CI 的绿灯不能反过来当成本地证据，两条证据链分开记账。
 - 提交路径无 husky 门禁（实测），门禁全靠手动执行 `verify.mjs` 并把真实数字写进 commit body。
 
 ## 七、遗留与需要人定的事
